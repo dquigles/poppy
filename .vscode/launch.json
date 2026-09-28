@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:poppy}",
+            "name": "Debug poppy",
+            "target": "poppy",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug poppy"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:poppy}",
+            "name": "Release poppy",
+            "target": "poppy",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release poppy"
+        }
+    ]
+}
