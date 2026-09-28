@@ -16,7 +16,7 @@ Workflow per milestone:
 | M3 | Liquid Glass pill + fallback | done |
 | M4 | Expand/collapse animation + drag | done |
 | M5 | Embedded PTY terminal (SwiftTerm) | done |
-| M6 | Global hotkey (Carbon) | not started |
+| M6 | Global hotkey (Carbon) | done |
 | M7 | .app bundling script | not started |
 
 ## Decisions
@@ -64,9 +64,26 @@ Workflow per milestone:
   - Esc and Ctrl-C reach the agent
   - 80% background opacity is readable
   - Closes risks 6 (SwiftTerm half) and 8.
+- User-reported after M5 (fixed together with M6, verified by the user):
+  - SwiftTerm's scroller showed on the right. Now hidden, and the columns are re-fitted.
+  - Square window-shadow edges showed outside the rounded corners when the expanded panel was key.
+    - First attempt (turn off `hasShadow` for native glass) was wrong. A side-by-side experiment (scratchpad glasslab: regular/clear, shadow on/off, key, container) showed the bright Spotlight-like rim comes **from the window shadow**, not from `NSGlassEffectView`. Without the shadow the glass looks flat.
+    - Actual fix: keep `hasShadow = true` and refresh the shadow shape at every change (`GlassPanel.refreshShadow()`: now plus the next run-loop pass; on becomeKey/resignKey; after animations, fades and drags).
+    - The refresh alone did not fix it. The square hairline is the macOS 26 **key-window outline of a borderless window**, reproduced with the scratchpad `keylab` experiment.
+    - Of the options tested (borderless: square; borderless without shadow while key: no rim; titled with a hidden titlebar: correct), titled won. The panel is now titled only while expanded (`GlassPanel.setTitledChrome`), and the pill stays borderless.
+- Carbon `RegisterEventHotKey` for ctrl+opt+space returns noErr on macOS 26.6.
+- User-reported: ⌘⌫ did nothing in the terminal. SwiftTerm sends Command keys through `interpretKeyEvents` and ignores the resulting text commands. Added Ghostty-style mappings in `PoppyTerminalView.performKeyEquivalent`: ⌘⌫ sends ^U, ⌘← sends ^A, ⌘→ sends ^E. (SwiftTerm's `keyDown` isn't `open`.)
+- M6 verified by the user:
+  - hotkey over fullscreen Chrome
+  - collapse returns typing to Chrome
+  - refocus without collapsing
+  - works on other Spaces
+  - Closes risk 7.
+  - ⇧↩ inserts a newline in Claude Code without a mapping (SwiftTerm's kitty keyboard protocol).
+- Possible later additions (not requested yet): ⌘K clear, ⌘+/−/0 font size via a `fontSize` config.
 
 ## Known issues
-(none yet)
+- While expanded the panel is titled, so AppKit may constrain its frame on `makeKeyAndOrderFront`. On a display whose visible area is smaller than about 776×496 pt, this can override §7.4's top-left overflow alignment. Not fixed, because it's practically unreachable (M6 review nit).
 
 ## Deferred review notes
 - (done in M5) Create the placeholder field only when `session == nil` (M4 review).

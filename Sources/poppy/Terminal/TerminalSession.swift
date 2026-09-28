@@ -74,6 +74,13 @@ final class TerminalSession {
         view.nativeForegroundColor = NSColor(white: 0.92, alpha: 1)
         view.nativeBackgroundColor = NSColor(white: 0.05, alpha: 1)
         view.backgroundOpacity = 0.80
+        // SwiftTerm's scroller is private; hide its view (trackpad scrollback still works).
+        // With it hidden SwiftTerm reserves no width, and setFrameSize re-fits the columns
+        // before the process starts.
+        for case let scroller as NSScroller in view.subviews {
+            scroller.isHidden = true
+        }
+        view.setFrameSize(host.bounds.size)
         host.addSubview(view)
         currentView = view
         exited = false
@@ -112,6 +119,26 @@ extension TerminalSession: @preconcurrency LocalProcessTerminalViewDelegate {
 /// Terminal view that swallows input after the agent exits and restarts on Enter.
 final class PoppyTerminalView: LocalProcessTerminalView {
     weak var session: TerminalSession?
+
+    /// macOS line-editing shortcuts, as Ghostty maps them by default. SwiftTerm sends
+    /// Command keys through interpretKeyEvents, which turns these into text-editing
+    /// commands it ignores, so translate them to the control bytes shells and TUIs expect.
+    /// (keyDown isn't overridable; Command keys reach performKeyEquivalent first.)
+    private static let commandKeyBytes: [UInt16: UInt8] = [
+        51: 0x15,   // ⌘⌫  -> ^U  delete to start of line
+        123: 0x01,  // ⌘←  -> ^A  start of line
+        124: 0x05,  // ⌘→  -> ^E  end of line
+    ]
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        if event.type == .keyDown, flags == [.command], window?.firstResponder === self,
+           let byte = Self.commandKeyBytes[event.keyCode] {
+            send(source: self, data: [byte][...])
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         if let session, session.exited {

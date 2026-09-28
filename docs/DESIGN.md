@@ -107,8 +107,9 @@ The style mask must be passed to `init`. Then:
 | `becomesKeyOnlyIfNeeded` | `false` |
 | `isOpaque` | `false` |
 | `backgroundColor` | `.clear` |
-| `hasShadow` | `true` |
+| `hasShadow` | `true`. On macOS 26 the window shadow also draws the bright rim around the glass (verified side by side against Spotlight: without it the glass looks flat). |
 | `isMovableByWindowBackground` | `false` |
+| `isMovable` | `false` (no system titlebar drag while titled; drags are manual, §7.8–7.9) |
 | `animationBehavior` | `.none` |
 | `isReleasedWhenClosed` | `false` |
 
@@ -117,7 +118,11 @@ Overrides:
 - `canBecomeMain` returns `false`.
 - `performKeyEquivalent(with:)` (§6.2).
 
-The panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). Call `panel.invalidateShadow()` in the completion of every frame animation and after every drag end (the expand/collapse steps in §7.7 list it).
+The panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1).
+
+**Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` (re-hiding the three standard buttons, which AppKit recreates) at the start of `expand()`. It removes them in the collapse frame-animation completion. Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
+
+**Shadow shape.** `GlassPanel.refreshShadow()` calls `invalidateShadow()` now and again via `DispatchQueue.main.async` (the glass renders its new shape a pass later; a shadow computed too early came out square around the expanded panel). It is called from `becomeKey()`/`resignKey()` overrides (key windows use a stronger shadow), in every frame-animation and fade completion, and after every drag end. The expand/collapse steps in §7.7 that say `invalidateShadow()` mean `refreshShadow()`.
 
 ### Observers (in `PanelController`)
 Both are selector-based (`addObserver(self, selector:…)`), so they unregister automatically; no `deinit` cleanup is needed.
@@ -381,6 +386,10 @@ Each callback returns early if `source !== currentView`.
 - `nativeBackgroundColor = NSColor(white: 0.05, alpha: 1)`
 - `backgroundOpacity = 0.80`: only the default background is translucent, so the glass shows through behind the text.
 - Do not enable SwiftTerm's Metal renderer (it's off by default).
+- Hide the scroller: SwiftTerm's `NSScroller` is a private subview, so set `isHidden = true` on every `NSScroller` in `view.subviews`, then call `view.setFrameSize(host.bounds.size)` before `startProcess` so the columns are re-fitted (SwiftTerm reserves no scroller width when it's hidden and never un-hides it; checked in v1.20.0). Trackpad scrollback still works.
+
+### 9.1a Command-key line editing
+SwiftTerm routes Command-key presses through `interpretKeyEvents` and ignores the resulting text-editing commands. Its `keyDown` is `public`, not `open`, so `PoppyTerminalView.performKeyEquivalent` (which SwiftTerm doesn't override, and which AppKit calls before `keyDown` for Command keys) intercepts key-down events, only while the view is first responder, whose modifiers (among command/shift/control/option) are exactly `[.command]` and sends these bytes through `send(source:data:)`, matching Ghostty's defaults: ⌘⌫ (keyCode 51) → `0x15` (^U), ⌘← (123) → `0x01` (^A), ⌘→ (124) → `0x05` (^E). ⌥-arrows and ⌥⌫ already work through SwiftTerm's option-as-meta handling.
 
 ### 9.2 Spawning (`ShellEnvironment`, `nonisolated enum` with static functions)
 - **`executable`:** `$SHELL` from `ProcessInfo.processInfo.environment` if it's an absolute path and `FileManager.isExecutableFile(atPath:)` is true. Otherwise `/bin/zsh`.
@@ -433,14 +442,14 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 
 **Registration**
 - `GlobalHotKey.init?(spec: String, action: @escaping @MainActor () -> Void)`: parses `spec` (falling back to `ctrl+opt+space` as below), installs the handler, registers the hotkey, and logs both OSStatus values. If either `InstallEventHandler` or `RegisterEventHotKey` returns non-zero, it cleans up whatever succeeded and returns `nil`. `AppDelegate` stores the optional result.
-- Handler: `InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)`.
+- Handler: `InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)` (the ref is kept so a failed registration can `RemoveEventHandler`). Both OSStatus values are logged.
   - `spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))`.
 - Hotkey: `RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: 0x506F_7079 /* 'Popy' */, id: 1), GetApplicationEventTarget(), 0, &ref)`.
 
 **The handler**
 - `hotKeyHandler` is a file-scope `nonisolated` function matching `EventHandlerProcPtr`.
 - It reads the `EventHotKeyID` with `GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, size, nil, &id)`.
-- If `id.id == 1`: first `let hk = Unmanaged<GlobalHotKey>.fromOpaque(userData!).takeUnretainedValue()` **outside** any closure (`GlobalHotKey` is main-actor, therefore Sendable; the raw `userData` pointer must not be captured), then `MainActor.assumeIsolated { hk.action() }`.
+- If `id.signature` is `'Popy'` and `id.id == 1` (otherwise return `eventNotHandledErr`): first `let hk = Unmanaged<GlobalHotKey>.fromOpaque(userData!).takeUnretainedValue()` **outside** any closure (`GlobalHotKey` is main-actor, therefore Sendable; the raw `userData` pointer must not be captured), then `MainActor.assumeIsolated { hk.action() }`.
 - It returns `noErr`.
 
 **Logging and teardown**

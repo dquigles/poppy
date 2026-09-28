@@ -79,7 +79,7 @@ final class PanelController: NSObject {
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
         panel.orderFrontRegardless()
-        panel.invalidateShadow()
+        panel.refreshShadow()
     }
 
     private var focusTarget: NSView? { session?.focusView ?? placeholderField }
@@ -102,6 +102,7 @@ final class PanelController: NSObject {
         let target = Self.clamp(expandedFrame(fromPill: pillFrame), in: Self.screen(for: pillFrame))
 
         glass.cornerRadius = Self.expandedCornerRadius
+        panel.setTitledChrome(true)
         pillView.alphaValue = 0
         pillView.isHidden = true
         pinExpandedView(containerSize: glass.contentView.bounds.size)
@@ -111,10 +112,13 @@ final class PanelController: NSObject {
 
         animateFrame(to: target) { [weak self] in
             guard let self else { return }
-            panel.invalidateShadow()
+            panel.refreshShadow()
             panel.makeKeyAndOrderFront(nil)
             if let focusTarget { panel.makeFirstResponder(focusTarget) }
-            fade(expandedView, to: 1) { [weak self] in self?.finishAnimation() }
+            fade(expandedView, to: 1) { [weak self] in
+                self?.panel.refreshShadow()
+                self?.finishAnimation()
+            }
         }
     }
 
@@ -136,9 +140,12 @@ final class PanelController: NSObject {
         animateFrame(to: pillFrame) { [weak self] in
             guard let self else { return }
             glass.cornerRadius = Self.pillCornerRadius
-            panel.invalidateShadow()
+            panel.setTitledChrome(false)  // also refreshes the shadow
             pillView.isHidden = false
-            fade(pillView, to: 1) { [weak self] in self?.finishAnimation() }
+            fade(pillView, to: 1) { [weak self] in
+                self?.panel.refreshShadow()
+                self?.finishAnimation()
+            }
         }
     }
 
@@ -182,6 +189,30 @@ final class PanelController: NSObject {
         expandedView.autoresizingMask = mask
     }
 
+    // MARK: - Hotkey (DESIGN §11)
+
+    func hotkeyPressed() {
+        guard !isAnimating else { return }
+        switch state {
+        case .collapsed:
+            // Follow the user: if the mouse is on another display, jump there first.
+            let mouseScreen = Self.screenWithMouse()
+            if Self.screenNumber(mouseScreen) != Self.screenNumber(Self.screen(for: pillFrame)) {
+                pillFrame = NSRect(origin: Self.defaultPillOrigin(on: mouseScreen), size: Self.pillSize)
+                panel.setFrame(pillFrame, display: true)
+                saveState()
+            }
+            expand()
+        case .expanded:
+            if panel.isKeyWindow {
+                collapse()
+            } else {
+                panel.makeKeyAndOrderFront(nil)
+                if let focusTarget { panel.makeFirstResponder(focusTarget) }
+            }
+        }
+    }
+
     // MARK: - Pill / header interaction
 
     func pillClicked() {
@@ -192,7 +223,7 @@ final class PanelController: NSObject {
         guard state == .collapsed, !isAnimating else { return }
         let frame = Self.clamp(panel.frame, in: Self.screen(for: panel.frame))
         panel.setFrame(frame, display: true)
-        panel.invalidateShadow()
+        panel.refreshShadow()
         pillFrame = frame
         saveState()
     }
@@ -201,7 +232,7 @@ final class PanelController: NSObject {
         guard state == .expanded, !isAnimating else { return }
         let frame = Self.clamp(panel.frame, in: Self.screen(for: panel.frame))
         panel.setFrame(frame, display: true)
-        panel.invalidateShadow()
+        panel.refreshShadow()
         pillFrame = pillFrame(fromExpanded: frame)
         saveState()
     }
@@ -226,7 +257,7 @@ final class PanelController: NSObject {
         let clamped = Self.clamp(current, in: Self.screen(for: current))
         guard clamped != current else { return }
         panel.setFrame(clamped, display: true)
-        panel.invalidateShadow()
+        panel.refreshShadow()
         pillFrame = state == .expanded ? pillFrame(fromExpanded: clamped) : clamped
         saveState()
     }
