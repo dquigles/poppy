@@ -13,7 +13,7 @@ Workflow per milestone:
 |---|---|---|
 | M1 | Accessory app, no Dock icon | done |
 | M2 | Floating panel over fullscreen / all Spaces | done |
-| M3 | Liquid Glass pill + fallback | not started |
+| M3 | Liquid Glass pill + fallback | done |
 | M4 | Expand/collapse animation + drag | not started |
 | M5 | Embedded PTY terminal (SwiftTerm) | not started |
 | M6 | Global hotkey (Carbon) | not started |
@@ -43,6 +43,8 @@ Workflow per milestone:
   - the text field in the non-activating panel takes typing, and the frontmost app stayed Code/Ghostty
   - the right-click `NSMenu` works in the never-activated app
   - Risks 1 (unbundled half) and 4 are closed.
+- M3 verified by the user: native `NSGlassEffectView` looks right on the borderless clear panel, and the fallback mask rounds correctly. Risk 3 is closed except for the un-animated radius change (checked in M4).
+- `GlassBackgroundView.roundedMask` is `nonisolated`, because AppKit may call NSImage drawing handlers off the main thread (M3 review).
 
 ## Known issues
 (none yet)
