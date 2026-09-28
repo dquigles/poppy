@@ -12,7 +12,7 @@ Workflow per milestone:
 | M | Milestone | Status |
 |---|---|---|
 | M1 | Accessory app, no Dock icon | done |
-| M2 | Floating panel over fullscreen / all Spaces | not started |
+| M2 | Floating panel over fullscreen / all Spaces | done |
 | M3 | Liquid Glass pill + fallback | not started |
 | M4 | Expand/collapse animation + drag | not started |
 | M5 | Embedded PTY terminal (SwiftTerm) | not started |
@@ -38,6 +38,14 @@ Workflow per milestone:
   - lowercase `poppy` for identifiers: package, target, executable, `~/.config/poppy`, `local.poppy`, `POPPY_*` env vars
   - "Poppy" for display text: log prefix, menu, `Poppy.app`
   - `GlassPanel` and `GlassBackgroundView` keep their names, because "Glass" there is the visual effect
+- M2 verified by the user (unbundled `swift run`):
+  - `.statusBar` level works over fullscreen apps and on all Spaces
+  - the text field in the non-activating panel takes typing, and the frontmost app stayed Code/Ghostty
+  - the right-click `NSMenu` works in the never-activated app
+  - Risks 1 (unbundled half) and 4 are closed.
 
 ## Known issues
 (none yet)
+
+## Deferred review notes
+- M4: remove the notification observers in `PanelController.deinit` when the screen-parameter observer is added (M2 review nit).
