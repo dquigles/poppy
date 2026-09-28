@@ -483,10 +483,10 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 
 ## 12. Packaging (M7)
 
-`scripts/bundle.sh` (bash, `set -euo pipefail`, run from the repo root):
+`scripts/bundle.sh` (bash, `set -euo pipefail`, first `cd`s to the repo root so it can run from anywhere):
 1. `swift build -c release`.
 2. `rm -rf build/Poppy.app`, then `mkdir -p build/Poppy.app/Contents/{MacOS,Resources}`.
-3. Copy `.build/release/poppy` to `Contents/MacOS/poppy`, and `Resources/Info.plist` to `Contents/Info.plist`.
+3. Copy `$(swift build -c release --show-bin-path)/poppy` to `Contents/MacOS/poppy`, and `Resources/Info.plist` to `Contents/Info.plist`.
    - SwiftTerm's resource bundle (Metal shaders) is **not** copied. The Metal renderer is not enabled, and SwiftTerm deliberately doesn't use `Bundle.module`.
 4. `codesign --force --deep --sign - build/Poppy.app`.
 5. Print the app path.

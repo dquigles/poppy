@@ -17,7 +17,7 @@ Workflow per milestone:
 | M4 | Expand/collapse animation + drag | done |
 | M5 | Embedded PTY terminal (SwiftTerm) | done |
 | M6 | Global hotkey (Carbon) | done |
-| M7 | .app bundling script | not started |
+| M7 | .app bundling script | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -81,8 +81,16 @@ Workflow per milestone:
   - Closes risk 7.
   - ⇧↩ inserts a newline in Claude Code without a mapping (SwiftTerm's kitty keyboard protocol).
 - Possible later additions (not requested yet): ⌘K clear, ⌘+/−/0 font size via a `fontSize` config.
+- M7 verified by the user on the bundled `build/Poppy.app`:
+  - no Dock icon, ad-hoc signature
+  - the Finder-launched PATH/locale matches the shell
+  - claude launches
+  - fullscreen, Spaces and hotkey behavior is unchanged
+  - rounded key-window corners
+  - Closes risks 1 (bundled half) and 5.
 
 ## Known issues
+- Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.
 - While expanded the panel is titled, so AppKit may constrain its frame on `makeKeyAndOrderFront`. On a display whose visible area is smaller than about 776×496 pt, this can override §7.4's top-left overflow alignment. Not fixed, because it's practically unreachable (M6 review nit).
 
 ## Deferred review notes
