@@ -15,7 +15,7 @@ Workflow per milestone:
 | M2 | Floating panel over fullscreen / all Spaces | done |
 | M3 | Liquid Glass pill + fallback | done |
 | M4 | Expand/collapse animation + drag | done |
-| M5 | Embedded PTY terminal (SwiftTerm) | not started |
+| M5 | Embedded PTY terminal (SwiftTerm) | done |
 | M6 | Global hotkey (Carbon) | not started |
 | M7 | .app bundling script | not started |
 
@@ -50,10 +50,24 @@ Workflow per milestone:
   - keyboard focus returns to the underlying app after collapse (the `orderOut` + `orderFrontRegardless` trick works), which closes risk 2
   - the un-animated corner-radius change looks acceptable, which closes the rest of risk 3
   - the easing looks right
+- SwiftTerm resolved to 1.20.0. Its `processTerminated` `exitCode` is the raw waitpid status (exit 3 arrives as 768), so Poppy decodes it.
+- The terminal is created at its final fixed size at launch, so expand/collapse causes zero resizes (no `terminal size` log lines).
+- Interactive login zsh startup takes about 1.5s on the dev machine, so the agent appears shortly after launch.
+- M5 verified by the user:
+  - claude runs with colors
+  - vim/htop render correctly
+  - the session survives collapse
+  - focus works over fullscreen Chrome
+  - copy/paste works
+  - exit + Enter restarts the agent
+  - a custom command works
+  - Esc and Ctrl-C reach the agent
+  - 80% background opacity is readable
+  - Closes risks 6 (SwiftTerm half) and 8.
 
 ## Known issues
 (none yet)
 
 ## Deferred review notes
-- M5: create the placeholder field only when `session == nil` (M4 review).
+- (done in M5) Create the placeholder field only when `session == nil` (M4 review).
 - (resolved in M4) Observer cleanup: M4 uses selector-based `NotificationCenter` observers, which unregister automatically, instead of block observers removed in `deinit`. This also avoids nonisolated-deinit problems.

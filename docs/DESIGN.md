@@ -391,14 +391,14 @@ Each callback returns early if `source !== currentView`.
   - Always set `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=Poppy`, and `SHELL=<executable>`.
   - Set `LANG=en_US.UTF-8` only if `LANG` is unset or empty.
   - Set `HOME` (`NSHomeDirectory()`), `USER` and `LOGNAME` (`NSUserName()`) each only if unset or empty.
-  - Remove `POPPY_COMMAND`.
+  - Remove `POPPY_COMMAND`, `TERM_PROGRAM_VERSION`, `TERM_SESSION_ID`, `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` (the launching terminal's identity, and a parent Claude Code session when started via `swift run` from one).
 
 ### 9.3 Exit and restart
 - **`processTerminated`:**
   - Set `exited = true`.
-  - Feed this into the terminal: `currentView.feed(text: "\r\n[Poppy] process exited (\(desc)). Press Enter to restart.\r\n")`, where `desc` is `code N`, or `signal` if `exitCode` is nil.
+  - Feed this into the terminal: `currentView.feed(text: "\r\n[Poppy] process exited (\(desc)). Press Enter to restart.\r\n")`, where `desc` is `code N` or `signal N`. SwiftTerm passes the **raw `waitpid` status** as `exitCode` (checked in v1.20.0: exit 3 arrives as 768), so decode it: `status & 0x7f == 0` means exited with code `(status >> 8) & 0xff`, otherwise it was killed by signal `status & 0x7f`. A nil `exitCode` is reported as `signal`.
 - **`PoppyTerminalView.send(source:data:)`** (the outgoing path: keystrokes and terminal-generated replies):
-  - If `session?.exited == true`: drop the data. If it contains byte 13, call `DispatchQueue.main.async { session.restart() }` (deferred: `restart()` removes this very view, which is still on the stack in `keyDown`).
+  - If `session?.exited == true`: drop the data. If it contains byte 13, defer with `DispatchQueue.main.async` (`restart()` removes this very view, which is still on the stack in `keyDown`), and inside the block restart only if `session.exited` is still true and `session.focusView === self` (so repeated Enters can't kill the fresh agent).
   - Otherwise, call `super`.
 - **`restart()`** (doesn't wait for the old process):
   1. `terminateChild()`.
@@ -408,10 +408,10 @@ Each callback returns early if `source !== currentView`.
 
 ### 9.4 Terminating the child
 `terminateChild()`, when `currentView.process.running` and `shellPid > 0`:
-1. `kill(-shellPid, SIGHUP)`. The child is a group leader after `forkpty`.
+1. `kill(-shellPid, SIGHUP)`. The shell leads its own group after `forkpty`; with `-i` the agent may be in a separate job group, but it still gets SIGHUP when the shell (the pty's session leader) exits.
 2. Only if that returns −1: `kill(shellPid, SIGHUP)`.
 
-It's called from `restart()` and `applicationWillTerminate`. In `restart()` only, after signalling, reap the old child off the main thread so it can't become a zombie: `let pid = shellPid; DispatchQueue.global().async { var st: Int32 = 0; _ = waitpid(pid, &st, 0) }` (returns immediately with ECHILD if SwiftTerm already reaped it).
+It's called from `restart()` and `applicationWillTerminate`. In `restart()` only, after signalling, reap the old child on a global queue: poll `waitpid(pid, &st, WNOHANG)` every 50 ms for up to 1 s (stop on any non-zero result, including -1/ECHILD if SwiftTerm already reaped it); if it's still alive, `kill(-pid, SIGKILL)`, `kill(pid, SIGKILL)`, then a blocking `waitpid`.
 
 ## 10. Liquid Glass (`GlassBackgroundView`)
 

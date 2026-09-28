@@ -6,9 +6,13 @@ import PackageDescription
 let package = Package(
     name: "poppy",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.20.0"),
+    ],
     targets: [
         .executableTarget(
             name: "poppy",
+            dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")],
             swiftSettings: [.defaultIsolation(MainActor.self)]
         ),
     ]

@@ -21,6 +21,7 @@ final class PanelController: NSObject {
 
     let panel: GlassPanel
     private let config: Config
+    private let session: TerminalSession?
     private let glass: GlassBackgroundView
     private let pillView: PillView
     private let expandedView: ExpandedView
@@ -33,8 +34,9 @@ final class PanelController: NSObject {
     private(set) var pillFrame: NSRect
     private var anchor = Anchor(right: true, top: false)
 
-    init(config: Config) {
+    init(config: Config, session: TerminalSession?) {
         self.config = config
+        self.session = session
         pillFrame = Self.initialPillFrame(from: PanelState.load())
         panel = GlassPanel(contentRect: pillFrame)
 
@@ -54,11 +56,16 @@ final class PanelController: NSObject {
         glass.contentView.addSubview(expandedView)
 
         let host = expandedView.contentHost
-        let field = NSTextField(frame: NSRect(x: 0, y: host.bounds.height - 24, width: host.bounds.width, height: 24))
-        field.placeholderString = "Type here to test focus"
-        field.autoresizingMask = [.width, .minYMargin]
-        host.addSubview(field)
-        placeholderField = field
+        if let session {
+            session.attach(to: host)
+            session.onViewReplaced = { [weak self] in self?.refocusAfterRestart() }
+        } else {
+            let field = NSTextField(frame: NSRect(x: 0, y: host.bounds.height - 24, width: host.bounds.width, height: 24))
+            field.placeholderString = "Type here to test focus"
+            field.autoresizingMask = [.width, .minYMargin]
+            host.addSubview(field)
+            placeholderField = field
+        }
 
         panel.contentView = glass
         panel.allowsKey = false
@@ -75,7 +82,13 @@ final class PanelController: NSObject {
         panel.invalidateShadow()
     }
 
-    private var focusTarget: NSView? { placeholderField }
+    private var focusTarget: NSView? { session?.focusView ?? placeholderField }
+
+    /// After Restart Agent swaps the terminal view, keep typing going to the new one.
+    private func refocusAfterRestart() {
+        guard state == .expanded, let focusTarget else { return }
+        panel.makeFirstResponder(focusTarget)
+    }
 
     // MARK: - Expand / collapse (DESIGN §6.1, §7.7)
 
@@ -230,7 +243,7 @@ final class PanelController: NSObject {
 
         let restart = NSMenuItem(title: "Restart Agent", action: #selector(restartAgent), keyEquivalent: "")
         restart.target = self
-        restart.isEnabled = false  // no terminal session until M5
+        restart.isEnabled = session != nil
         menu.addItem(restart)
 
         let quit = NSMenuItem(title: "Quit Poppy", action: #selector(quit), keyEquivalent: "")
@@ -240,7 +253,9 @@ final class PanelController: NSObject {
         NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
-    @objc private func restartAgent() {}
+    @objc private func restartAgent() {
+        session?.restart()
+    }
 
     @objc private func quit() {
         NSApp.terminate(nil)
