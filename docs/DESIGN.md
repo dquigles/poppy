@@ -120,6 +120,7 @@ Overrides:
 The panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). Call `panel.invalidateShadow()` in the completion of every frame animation and after every drag end (the expand/collapse steps in §7.7 list it).
 
 ### Observers (in `PanelController`)
+Both are selector-based (`addObserver(self, selector:…)`), so they unregister automatically; no `deinit` cleanup is needed.
 - `NSWorkspace.shared.notificationCenter`, `NSWorkspace.activeSpaceDidChangeNotification`: call `panel.orderFrontRegardless()`. Key status is not changed.
 - `NotificationCenter.default`, `NSApplication.didChangeScreenParametersNotification`: re-clamp (§7.4). If `isAnimating`, set `needsReclamp = true` instead; the final completion of expand/collapse (where `isAnimating` becomes false) runs the re-clamp if `needsReclamp`, then clears it.
 

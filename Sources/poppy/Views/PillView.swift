@@ -4,10 +4,7 @@ import AppKit
 final class PillView: NSView {
     weak var controller: PanelController?
 
-    private var startMouse = NSPoint.zero
-    private var startOrigin = NSPoint.zero
-    private var tracking = false
-    private var dragging = false
+    private var drag = WindowDrag()
 
     init(frame: NSRect, title: String) {
         super.init(frame: frame)
@@ -43,31 +40,23 @@ final class PillView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        tracking = false
+        drag.cancel()
         guard let controller, !controller.isAnimating, let window else { return }
-        startMouse = NSEvent.mouseLocation
-        startOrigin = window.frame.origin
-        tracking = true
-        dragging = false
+        drag.begin(window: window)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard tracking, let window else { return }
-        let mouse = NSEvent.mouseLocation
-        let dx = mouse.x - startMouse.x
-        let dy = mouse.y - startMouse.y
-        if !dragging && hypot(dx, dy) > 3 {
-            dragging = true
+        // An animation started mid-drag (e.g. the hotkey) owns the frame now.
+        guard let controller, !controller.isAnimating, let window else {
+            drag.cancel()
+            return
         }
-        if dragging {
-            window.setFrameOrigin(NSPoint(x: startOrigin.x + dx, y: startOrigin.y + dy))
-        }
+        drag.moved(window: window)
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard tracking else { return }
-        tracking = false
-        if dragging {
+        guard drag.isTracking else { return }
+        if drag.end() {
             controller?.pillDragEnded()
         } else {
             controller?.pillClicked()
@@ -76,5 +65,45 @@ final class PillView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         controller?.showContextMenu(event: event, in: self)
+    }
+}
+
+/// Manual window drag with a 3pt click-vs-drag threshold, in screen coordinates.
+struct WindowDrag {
+    private var startMouse = NSPoint.zero
+    private var startOrigin = NSPoint.zero
+    private(set) var isTracking = false
+    private var isDragging = false
+
+    mutating func cancel() {
+        isTracking = false
+        isDragging = false
+    }
+
+    mutating func begin(window: NSWindow) {
+        startMouse = NSEvent.mouseLocation
+        startOrigin = window.frame.origin
+        isTracking = true
+        isDragging = false
+    }
+
+    mutating func moved(window: NSWindow) {
+        guard isTracking else { return }
+        let mouse = NSEvent.mouseLocation
+        let dx = mouse.x - startMouse.x
+        let dy = mouse.y - startMouse.y
+        if !isDragging && hypot(dx, dy) > 3 {
+            isDragging = true
+        }
+        if isDragging {
+            window.setFrameOrigin(NSPoint(x: startOrigin.x + dx, y: startOrigin.y + dy))
+        }
+    }
+
+    /// Ends tracking; returns true if the gesture was a drag (false for a click or no gesture).
+    mutating func end() -> Bool {
+        let wasDrag = isTracking && isDragging
+        cancel()
+        return wasDrag
     }
 }

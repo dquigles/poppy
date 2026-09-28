@@ -14,7 +14,7 @@ Workflow per milestone:
 | M1 | Accessory app, no Dock icon | done |
 | M2 | Floating panel over fullscreen / all Spaces | done |
 | M3 | Liquid Glass pill + fallback | done |
-| M4 | Expand/collapse animation + drag | not started |
+| M4 | Expand/collapse animation + drag | done |
 | M5 | Embedded PTY terminal (SwiftTerm) | not started |
 | M6 | Global hotkey (Carbon) | not started |
 | M7 | .app bundling script | not started |
@@ -45,9 +45,15 @@ Workflow per milestone:
   - Risks 1 (unbundled half) and 4 are closed.
 - M3 verified by the user: native `NSGlassEffectView` looks right on the borderless clear panel, and the fallback mask rounds correctly. Risk 3 is closed except for the un-animated radius change (checked in M4).
 - `GlassBackgroundView.roundedMask` is `nonisolated`, because AppKit may call NSImage drawing handlers off the main thread (M3 review).
+- `NSAnimationContext` `completionHandler` is `@Sendable` in the Swift overlay, so animation completions are typed `@MainActor () -> Void`.
+- M4 verified by the user:
+  - keyboard focus returns to the underlying app after collapse (the `orderOut` + `orderFrontRegardless` trick works), which closes risk 2
+  - the un-animated corner-radius change looks acceptable, which closes the rest of risk 3
+  - the easing looks right
 
 ## Known issues
 (none yet)
 
 ## Deferred review notes
-- M4: remove the notification observers in `PanelController.deinit` when the screen-parameter observer is added (M2 review nit).
+- M5: create the placeholder field only when `session == nil` (M4 review).
+- (resolved in M4) Observer cleanup: M4 uses selector-based `NotificationCenter` observers, which unregister automatically, instead of block observers removed in `deinit`. This also avoids nonisolated-deinit problems.
