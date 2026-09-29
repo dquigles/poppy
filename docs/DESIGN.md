@@ -129,12 +129,12 @@ Overrides:
 
 The Poppy panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). (The hotkey recorder's own `GlassPanel` is covered by §11.2.)
 
-**Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` (re-hiding the three standard buttons, which AppKit recreates) at the start of `expand()`. It removes them in the collapse frame-animation completion. Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
+**Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` (re-hiding the three standard buttons, which AppKit recreates) at the start of `expand()`. It removes them, and `.resizable` (added after the expand animation, §7.13), in the collapse frame-animation completion. `zoom(_:)` is a no-op (§7.13). Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
 
 **Shadow shape.** `GlassPanel.refreshShadow()` calls `invalidateShadow()` now and again via `DispatchQueue.main.async` (the glass renders its new shape a pass later; a shadow computed too early came out square around the expanded panel). It is called from `becomeKey()`/`resignKey()` overrides (key windows use a stronger shadow), in every frame-animation and fade completion, and after every drag end. The expand/collapse steps in §7.7 that say `invalidateShadow()` mean `refreshShadow()`.
 
 ### Observers (in `PanelController`)
-Both are selector-based (`addObserver(self, selector:…)`), so they unregister automatically; no `deinit` cleanup is needed.
+These and the three live-resize observers (§7.13) are selector-based (`addObserver(self, selector:…)`), so they unregister automatically; no `deinit` cleanup is needed.
 - `NSWorkspace.shared.notificationCenter`, `NSWorkspace.activeSpaceDidChangeNotification`: call `panel.orderFrontRegardless()`. Key status is not changed.
 - `NotificationCenter.default`, `NSApplication.didChangeScreenParametersNotification`: re-clamp (§7.4). If `isAnimating`, set `needsReclamp = true` instead; the final completion of expand/collapse (where `isAnimating` becomes false) runs the re-clamp if `needsReclamp`, then clears it.
 
@@ -196,8 +196,8 @@ There is no collapse button; the panel collapses on a click outside it, or with 
 ### 7.1 Sizes
 | | Size | Corner radius |
 |---|---|---|
-| Collapsed pill | 44 × 44 pt (a circle; 168 × 44 before M11) | 22 |
-| Expanded panel | 760 × 480 pt | 20 |
+| Collapsed pill | a circle, diameter 36 / **44** / 56 pt by preset (§7.14; 168 × 44 before M11) | diameter / 2 |
+| Expanded panel | **760 × 480** pt by default, user-resizable, min 480 × 300 (§7.13) | 20 |
 
 The screen margin is 16 pt from `visibleFrame`.
 
@@ -213,10 +213,10 @@ Screens are compared by `deviceDescription[NSDeviceDescriptionKey("NSScreenNumbe
 `screenWithMouse()` = the first screen where `NSMouseInRect(NSEvent.mouseLocation, screen.frame, false)`, else `NSScreen.main`.
 
 ### 7.3 Default position
-Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − pillWidth, minY + 16)`, with `pillWidth` = 44. At launch the screen is `NSScreen.main`.
+Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − pillWidth, minY + 16)`, with `pillWidth` the current diameter (§7.14). At launch the screen is `NSScreen.main`.
 
 ### 7.4 Clamping
-`clamp(frame, in screen)` shifts the frame so it lies inside `visibleFrame.insetBy(dx: 8, dy: 8)`. Frames are never shrunk: if a frame is larger than that area, it is aligned to the area's top-left corner (`minX`, `maxY`) and allowed to overflow. This is decided **per axis**: an axis that fits is shifted normally; an axis that overflows is aligned (x to `minX`, y so that `maxY` matches). The fixed-size `ExpandedView` (§7.7) is therefore never clipped by clamping. It is applied:
+`clamp(frame, in screen)` shifts the frame so it lies inside `visibleFrame.insetBy(dx: 8, dy: 8)`. Frames are never shrunk: if a frame is larger than that area, it is aligned to the area's top-left corner (`minX`, `maxY`) and allowed to overflow. This is decided **per axis**: an axis that fits is shifted normally; an axis that overflows is aligned (x to `minX`, y so that `maxY` matches). The `ExpandedView` (§7.7) is therefore never clipped by clamping. (Only the expand-time fit, §7.13, ever shrinks it, before clamping.) It is applied:
 - **To the computed expanded frame**, using the screen chosen from the pill frame.
 - **To the restored pill frame at launch.**
 - **On a screen-parameter change:**
@@ -243,7 +243,7 @@ The expanded frame keeps that corner of the pill fixed (bottom-right means `maxX
   - Inside `GlassBackgroundView.contentView`:
     - `PillView` fills it (autoresizing `[.width, .height]`).
     - `ExpandedView`.
-- `ExpandedView` always has a **fixed** size of 760 × 480, so the terminal never resizes.
+- `ExpandedView` keeps its own size during every animation and during a live resize, so the terminal is resized only when its size is deliberately set: during and at the end of a user resize (coalesced, §7.13), or, while hidden at the start of an expand, when the saved size doesn't fit the screen. Its size is `expandedSize` (760 × 480 by default).
   - At the start of each expand, its origin is placed so that its anchor corner matches the container's anchor corner.
   - Its `autoresizingMask` is set to keep it attached to that corner:
 
@@ -254,7 +254,7 @@ The expanded frame keeps that corner of the pill fixed (bottom-right means `maxX
     | bottom | — | `.maxYMargin` |
     | top | — | `.minYMargin` |
 
-    Example: bottom-right means origin `(containerWidth − 760, 0)` and mask `[.minXMargin, .maxYMargin]`.
+    Example: bottom-right means origin `(containerWidth − width, 0)` and mask `[.minXMargin, .maxYMargin]`.
   - The window clips it while the window is smaller. When fully expanded, its frame is exactly the container bounds.
 - Animation constants:
   - Frame animation: 0.30 s, `CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.2, 1.0)`.
@@ -264,23 +264,23 @@ The expanded frame keeps that corner of the pill fixed (bottom-right means `maxX
 
 **Expand:**
 1. `isAnimating = true`.
-2. Compute the anchor and the target frame.
+2. Compute the anchor, fit the ExpandedView's size to the screen (§7.13), and compute the target frame.
 3. Set the glass `cornerRadius = 20`.
 4. Hide `PillView` (`alphaValue = 0`, `isHidden = true`).
 5. Position `ExpandedView` and set its mask. Set `alphaValue = 0`, `isHidden = false`.
 6. Animate the frame. In its completion:
-   1. `invalidateShadow()`.
+   1. Insert `.resizable` and set `contentMinSize` (§7.13); `invalidateShadow()`.
    2. Focus (§6.1).
    3. Fade `ExpandedView` to 1.
    4. In the fade's completion, `isAnimating = false`.
 
 **Collapse:**
-1. `isAnimating = true`.
+1. Return if `panel.inLiveResize` (§7.13). `isAnimating = true`; remove `.resizable`.
 2. Release focus (§6.1).
 3. Compute `pillFrame` (§7.6).
 4. `ExpandedView.alphaValue = 0`, `isHidden = true`.
 5. Animate the frame to `pillFrame`. In its completion:
-   1. Set the glass `cornerRadius = 22`.
+   1. Set the glass `cornerRadius = pillCornerRadius` (diameter / 2, §7.14).
    2. `invalidateShadow()`.
    3. `PillView.isHidden = false`.
    4. Fade `PillView` to 1.
@@ -317,6 +317,7 @@ In `PillView`, ignored while `isAnimating`:
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
 - It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
   - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5). Enabled only if `session != nil`.
+  - **"Pill Size ▸"** (M13): Small / Medium / Large (§7.14).
   - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
   - separator
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
@@ -328,7 +329,7 @@ In `PillView`, ignored while `isAnimating`:
 ### 7.11 Pill contents (the harness logo, M11)
 - `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`). From M11 it is used only by the expanded header's title (§7.9).
 - **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the same first word, lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch, and again by `switchAgent` (§9.5) when the agent changes.
-- **The pill** shows no text, only a centered `NSImageView`, 24×24 pt, `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)` calls `update(harness:title:)` (also called on an agent switch, §9.5), which sets the logo, and the tooltip and accessibility label to `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
+- **The pill** shows no text, only a centered `NSImageView`, 24×24 pt on the default pill (scaled with the pill size, §7.14), `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)` calls `update(harness:title:)` (also called on an agent switch, §9.5), which sets the logo, and the tooltip and accessibility label to `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
 - **Logos are black-and-white only** (the user's choice in M11: no brand colors). Each is a transparent PNG, black on alpha, used as a template image, so it tints to `labelColor` on the pill (black in light mode, white in dark) and follows the menu bar's appearance.
 - **`HarnessLogo.image(for:points:)`** loads `<name>.png` (`claude`, `codex`, `gemini`, `opencode`; `.other`, i.e. unrecognized CLIs and plain shells, uses `poppy`), sets `size` to `points`×`points`, `isTemplate = true`, `accessibilityDescription = displayName`. `HarnessLogo.poppy(points:)` loads `poppy.png` the same way (description "Poppy"). A file that can't be found logs `logo: <name>.png not found in [...]` and falls back to SF Symbol `terminal` (natural size, template).
 - **Where the PNGs are loaded from**, first match wins:
@@ -347,6 +348,28 @@ In `PillView`, ignored while `isAnimating`:
 - `statusItem.menu = controller.makeMenu()` (repopulated on each open, §7.10). Clicking the icon shows the menu; no custom click handling.
 - `appLog("status item created")`.
 - The accessory policy is unchanged: no Dock icon, and opening the menu does not activate Poppy.
+
+### 7.13 Resizing the expanded panel (M13)
+- While expanded the panel is titled (§5). In expand's frame-animation completion, once fully grown, `PanelController` inserts `.resizable` into the style mask (not earlier, so an edge drag can't fight the grow animation) and sets `panel.contentMinSize = ExpandedView.minSize` (480 × 300; it limits user resizes only, code-driven frames ignore it). `.resizable` is removed at the start of collapse (and `setTitledChrome(false)` removes it too). So the system provides edge and corner resizing, cursors included. `isMovable` stays false; moving is still the header drag.
+- `GlassPanel.zoom(_:)` is overridden to do nothing, so double-clicking the hidden titlebar area under the header can't resize the panel.
+- `PanelController.expandedSize` is the size the user chose; loaded from `state.json` (each dimension at least the minimum), else `ExpandedView.defaultSize`.
+- **At expand**, before animating: fit it to the screen, each dimension `max(min(expandedSize, visibleFrame inset by 8), minSize)`, and if that differs from the ExpandedView's current size, `setFrameSize` it (it's hidden, so the terminal's one resize is invisible). `expandedSize` itself isn't changed. `expandedFrame(fromPill:)` and `pinExpandedView` use the ExpandedView's current size.
+- **Live resize** (`NSWindow.willStartLiveResizeNotification` / `didResizeNotification` / `didEndLiveResizeNotification` for the panel, selector observers, expanded only). The terminal reflows **while dragging** (the user asked for this in M13), coalesced so the agent isn't sent a resize on every mouse move:
+  - All three handlers do nothing unless expanded and not animating.
+  - Start: `expandedView.autoresizingMask = [.maxXMargin, .minYMargin]` (pinned top-left, so the header stays at the top).
+  - Each `didResize` while `panel.inLiveResize`: if no update is pending, schedule one `liveResizeInterval` (0.05 s) later (`liveResizeUpdatePending`), which, if still expanded and in live resize, sets `expandedView.frame` to the container bounds. So the ExpandedView (header, `contentHost` via autoresizing `[.width, .minYMargin]` / `[.width, .height]`, and the terminal view) follows the window at most ~20 times a second; between updates growing shows a sliver of bare glass and shrinking clips.
+  - End (`applyUserResize()`): clamp the panel frame (§7.4) and apply it if it moved; `expandedSize` = the container size; `expandedView.setFrameSize(expandedSize)` (the final size); `pinExpandedView`; `refreshShadow()`; `pillFrame` from the new frame (§7.6); save state; log `expanded size WxH`.
+- A `didResize` while expanded, not animating and **not** in live resize (e.g. a macOS window-tiling command) runs `applyUserResize()` at once if the ExpandedView's size differs from the container's.
+- `collapse()` does nothing while `panel.inLiveResize`.
+
+### 7.14 Pill size presets (M13)
+- `PanelController.pillPresets`: Small 36, Medium 44 (default), Large 56 pt. `pillDiameter` is loaded from `state.json` if it's one of these, else 44. `pillSize` and `pillCornerRadius` (diameter / 2) are computed from it.
+- **Logo size:** `PillView.logoSize(forDiameter:)` = `round(diameter × 24 / 44)` (20, 24, 31); `PillView.setDiameter(_:)` updates the logo's width and height constraints. The logo image itself is always requested at 24 pt and scaled by the image view.
+- **Menu:** "Pill Size ▸" (§7.10) lists the presets, the current one checked, disabled while animating; `selectPillSize(_:)` (tag = diameter) calls `setPillDiameter(_:)`:
+  - Ignored if unchanged or animating. Sets `pillDiameter` and the logo size.
+  - Collapsed: the new frame keeps the corner nearest the screen corner (`anchor(for: pillFrame)`, §7.5), is clamped, and applied; `glass.cornerRadius = pillCornerRadius`; `refreshShadow()`; `pillFrame` = it.
+  - Expanded: nothing moves; the next collapse uses the new size (`pillFrame(fromExpanded:)` and the collapse completion's corner radius).
+  - Save state.
 
 ## 8. Configuration and state
 
@@ -382,17 +405,19 @@ Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", 
 
 ### 8.2 `PanelState` (`state.json`, app-written)
 ```json
-{ "pillOrigin": { "x": 1200, "y": 16 } }
+{ "pillOrigin": { "x": 1200, "y": 16 }, "pillDiameter": 44, "expandedSize": { "width": 760, "height": 480 } }
 ```
+- `pillDiameter: Double?` (M13, §7.14) and `expandedSize: SavedSize?` (M13, §7.13; `nonisolated struct SavedSize: Codable, Sendable { var width: Double; var height: Double }`) are optional, so older files still load; nil means the default. `saveState()` always writes all three.
 - `pillOrigin` is a `nonisolated struct SavedPoint: Codable, Sendable { var x: Double; var y: Double }` (not `CGPoint`, whose Codable form is an array).
 - **Saved after:**
   - every drag end (pill or header)
   - a hotkey screen move (§11)
   - a screen-change clamp that moved the frame
+  - the end of a live resize (§7.13) and a pill size change (§7.14)
 
-  The saved value is always the pill origin (`pillFrame.origin`).
+  The saved origin is always the pill origin (`pillFrame.origin`, for the current diameter); `pillDiameter` and `expandedSize` are the current values.
 - **At launch:**
-  - If the file is present and a `pillSize` (44×44) rect at that origin intersects any screen's `visibleFrame`, use it, clamped in `screen(for:)`.
+  - If the file is present and a `pillSize` rect (the loaded diameter) at that origin intersects any screen's `visibleFrame`, use it, clamped in `screen(for:)`.
   - Otherwise, use the default position (§7.3).
 - Read and write failures are logged and otherwise ignored.
 
@@ -427,7 +452,7 @@ Each callback returns early if `source !== currentView`.
 - Creates the view with `frame = host.bounds` and `autoresizingMask = [.width, .height]`.
 - Adds it to `host` and starts the process.
 - Called once by `PanelController.init`, so the agent starts at app launch, not at first expand.
-- `host` has a fixed size (§7.7), so the terminal size is constant.
+- `host` follows the ExpandedView's size, which changes only deliberately (§7.7, §7.13), so the terminal follows user resizes (at most ~20 times a second while dragging) and never resizes during animations.
 
 **View configuration**
 - `font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)`
@@ -636,6 +661,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M10 | `HotKeyCombo` with more keys (§11.1), `HotKeyManager`, register/unregister `GlobalHotKey` (§11), the recorder (§11.2), hotkey shown in the Set Hotkey menu item and the Collapse item removed (§7.10), `Config.saveHotkey` (§8.1) | — |
 | M11 | `Views/HarnessLogo.swift`, `Resources/Logos/` (PNGs + SVG sources), `scripts/render-logos.swift`, logo copy in `bundle.sh`; the pill becomes a 44×44 circle with just the harness logo, unrecognized CLIs show the Poppy logo, and the menu bar icon becomes the Poppy logo (§7.11, §7.12, §12) | — |
 | M12 | `Terminal/AgentCatalog.swift`; Agent submenu with installed check, `TerminalSession.switchCommand(to:)`, `PillView.update`, `HeaderView.setTitle`, `Config.agents` and `saveValue` (§9.5, §7.10, §8.1) | — |
+| M13 | Expanded panel resizable by edges/corners, terminal reflows while dragging (coalesced, ~20/s) and on release (§7.13); pill size presets Small/Medium/Large in the menu (§7.14); `PanelState.pillDiameter`/`expandedSize` (§8.2) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -660,3 +686,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 12. Whether the recorder panel becomes key and receives keys (including ⌘ combos) without activating Poppy, over fullscreen apps too, and whether a changed hotkey takes effect immediately; the recorder can always be dismissed; and keyboard focus returns to the underlying app after it closes over the collapsed pill: M10.
 13. Whether the 44×44 glass circle keeps a good rim and shadow, whether template logos read well on glass in light and dark, and whether the Poppy logo is legible at 18 pt in the menu bar: M11.
 14. Whether the installed-CLI probe (an interactive login shell without a tty) finishes quickly and finds aliases, including from the Finder-launched app; that under `swift run` it never touches the launching terminal; and whether switching agents cleanly ends the old one and starts the new one: M12.
+15. Whether system edge/corner resizing works on the non-activating titled panel (cursors, all edges, over fullscreen apps), whether the terminal reflows smoothly while dragging without garbling the agent's display, and whether the smaller and larger pills keep a good glass rim: M13.

@@ -7,7 +7,15 @@ final class PillView: NSView {
     private var drag = WindowDrag()
     private let logo = NSImageView()
 
-    static let logoSize: CGFloat = 24
+    /// Logo size on the default 44 pt pill.
+    static let baseLogoPoints: CGFloat = 24
+
+    /// Logo size for a pill diameter, scaled from the default (DESIGN §7.14).
+    static func logoSize(forDiameter diameter: CGFloat) -> CGFloat {
+        (diameter * baseLogoPoints / 44).rounded()
+    }
+    private var logoWidth: NSLayoutConstraint?
+    private var logoHeight: NSLayoutConstraint?
 
     /// `title` names the CLI (DESIGN §7.11); it labels the pill when the harness isn't recognized.
     init(frame: NSRect, harness: Harness, title: String) {
@@ -17,12 +25,16 @@ final class PillView: NSView {
         logo.contentTintColor = .labelColor  // black in light mode, white in dark
         logo.translatesAutoresizingMaskIntoConstraints = false
         addSubview(logo)
+        let size = Self.logoSize(forDiameter: frame.width)
+        let width = logo.widthAnchor.constraint(equalToConstant: size)
+        let height = logo.heightAnchor.constraint(equalToConstant: size)
         NSLayoutConstraint.activate([
             logo.centerXAnchor.constraint(equalTo: centerXAnchor),
             logo.centerYAnchor.constraint(equalTo: centerYAnchor),
-            logo.widthAnchor.constraint(equalToConstant: Self.logoSize),
-            logo.heightAnchor.constraint(equalToConstant: Self.logoSize),
+            width, height,
         ])
+        logoWidth = width
+        logoHeight = height
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         update(harness: harness, title: title)
@@ -30,10 +42,17 @@ final class PillView: NSView {
 
     /// Shows `harness`'s logo; also called when the agent is switched (DESIGN §9.5).
     func update(harness: Harness, title: String) {
-        logo.image = HarnessLogo.image(for: harness, points: Self.logoSize)
+        logo.image = HarnessLogo.image(for: harness, points: Self.baseLogoPoints)  // scaled by the constraints
         let label = harness == .other ? title : harness.displayName
         toolTip = label
         setAccessibilityLabel(label)
+    }
+
+    /// Called when the pill size preset changes (DESIGN §7.14).
+    func setDiameter(_ diameter: CGFloat) {
+        let size = Self.logoSize(forDiameter: diameter)
+        logoWidth?.constant = size
+        logoHeight?.constant = size
     }
 
     override func accessibilityPerformPress() -> Bool {

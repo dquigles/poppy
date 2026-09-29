@@ -1,17 +1,19 @@
 import AppKit
 
-/// Fixed-size expanded content: header + content host (DESIGN §7.7, §7.9).
-/// Its size never changes, so the terminal inside is never resized by animation.
+/// Expanded content: header + content host (DESIGN §7.7, §7.9). It keeps its size
+/// during animations and live resizes, so the terminal inside is resized only when
+/// PanelController sets a new frame (during, coalesced, and at the end of a user resize,
+/// DESIGN §7.13).
 final class ExpandedView: NSView {
-    static let size = NSSize(width: 760, height: 480)
+    static let defaultSize = NSSize(width: 760, height: 480)
+    static let minSize = NSSize(width: 480, height: 300)
     static let headerHeight: CGFloat = 28
     static let contentInset: CGFloat = 8
 
     let header: HeaderView
     let contentHost: NSView
 
-    init(title: String) {
-        let size = Self.size
+    init(title: String, size: NSSize) {
         header = HeaderView(frame: NSRect(x: 0, y: size.height - Self.headerHeight,
                                           width: size.width, height: Self.headerHeight),
                             title: title)
@@ -20,6 +22,9 @@ final class ExpandedView: NSView {
                                            height: size.height - Self.headerHeight - Self.contentInset))
         super.init(frame: NSRect(origin: .zero, size: size))
 
+        // Children follow the view's own frame when PanelController resizes it.
+        header.autoresizingMask = [.width, .minYMargin]
+        contentHost.autoresizingMask = [.width, .height]
         contentHost.wantsLayer = true
         contentHost.layer?.cornerRadius = 10
         contentHost.layer?.masksToBounds = true

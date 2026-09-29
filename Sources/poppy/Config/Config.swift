@@ -147,9 +147,18 @@ nonisolated struct SavedPoint: Codable, Sendable {
     var y: Double
 }
 
+nonisolated struct SavedSize: Codable, Sendable {
+    var width: Double
+    var height: Double
+}
+
 /// App-written panel state (DESIGN §8.2).
 nonisolated struct PanelState: Codable, Sendable {
     var pillOrigin: SavedPoint?
+    /// Pill diameter preset (DESIGN §7.14); nil means the default.
+    var pillDiameter: Double?
+    /// Expanded panel size after a user resize (DESIGN §7.13); nil means the default.
+    var expandedSize: SavedSize?
 
     static func load() -> PanelState {
         guard let data = try? Data(contentsOf: ConfigPaths.state) else { return PanelState() }

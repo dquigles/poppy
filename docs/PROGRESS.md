@@ -23,6 +23,7 @@ Workflow per milestone:
 | M10 | Customizable hotkey: Set Hotkey recorder, hotkey shown in the menu, more keys | done |
 | M11 | Logos (black-and-white transparent PNGs): logo-only circular pill; Poppy logo in the menu bar and for unrecognized CLIs | done |
 | M12 | Agent switching from the menu (no context carry-over) | done |
+| M13 | Resizable expanded panel (drag edges/corners, terminal reflows live); pill size presets | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -105,6 +106,8 @@ Workflow per milestone:
   - Review: repo logo path only in debug builds; pill is an accessibility button and names unrecognized CLIs by `pillTitle`; lobe-icons MIT license added and shipped; render script runs from anywhere. Not migrated: a pill saved hugging the right edge under the old 168-pt width comes back 124 pt left of it; one drag re-saves it.
 - M12: "Agent ▸" submenu (built-ins + optional `config.agents`, each with its logo) switches the agent in a fresh terminal and saves `command` to config.json; CLIs not found by a login-shell probe show "(not installed)". Verified by the user; closes risk 14 (the swift-run-terminal part was fixed after the test, by design of setsid).
   - Review: the probe now uses posix_spawn with setsid, reads until the shell exits, and SIGKILLs the group after 5 s (tested with a SIGTERM-ignoring shell and a shell leaving a background job); a bad `agents` entry no longer discards the whole config; the launch command stays in the list after switching away; `probeWord` skips `NAME=value`, expands `~/`, and skips quoted words.
+- M13: the expanded panel resizes by its edges/corners (system resizing on the titled panel); the terminal reflows while dragging, coalesced to ~20/s (the user asked for live reflow over reflow-on-release), and the size is saved. Pill Size ▸ Small 36 / Medium 44 / Large 56. Verified by the user; closes risk 15.
+  - Review: `.resizable` only after the expand animation; zoom disabled; non-live resizes (tiling) applied at once; the saved pill origin matches a size changed while expanded. Rejected: silencing the per-resize `terminal size` log (debug stderr only, useful).
 
 ## Known issues
 - Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.

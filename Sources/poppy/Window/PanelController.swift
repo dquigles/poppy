@@ -11,8 +11,9 @@ final class PanelController: NSObject {
         var top: Bool
     }
 
-    static let pillSize = NSSize(width: 44, height: 44)  // a glass circle holding the logo
-    static let pillCornerRadius: CGFloat = 22
+    /// Pill diameter presets, in the Pill Size menu (DESIGN §7.14).
+    static let pillPresets: [(name: String, diameter: CGFloat)] = [("Small", 36), ("Medium", 44), ("Large", 56)]
+    static let defaultPillDiameter: CGFloat = 44
     static let expandedCornerRadius: CGFloat = 20
     static let margin: CGFloat = 16
     static let clampInset: CGFloat = 8
@@ -36,6 +37,15 @@ final class PanelController: NSObject {
     private var needsReclamp = false
     private(set) var pillFrame: NSRect
     private var anchor = Anchor(right: true, top: false)
+    /// The pill is a glass circle holding the logo; its diameter is a preset (DESIGN §7.14).
+    private var pillDiameter: CGFloat
+    private var pillSize: NSSize { NSSize(width: pillDiameter, height: pillDiameter) }
+    private var pillCornerRadius: CGFloat { pillDiameter / 2 }
+    /// The expanded size the user chose by resizing (DESIGN §7.13).
+    private var expandedSize: NSSize
+    /// A terminal resize is scheduled during a live resize (coalesced, DESIGN §7.13).
+    private var liveResizeUpdatePending = false
+    static let liveResizeInterval: TimeInterval = 0.05
     /// Global mouse-down monitor, installed only while fully expanded (DESIGN §6.3).
     private var clickOutsideMonitor: Any?
     /// Set by AppDelegate; the menu shows and changes the hotkey through it (DESIGN §7.10).
@@ -47,16 +57,27 @@ final class PanelController: NSObject {
         self.config = config
         agents = AgentCatalog(launchCommand: config.command)
         self.session = session
-        pillFrame = Self.initialPillFrame(from: PanelState.load())
+        let saved = PanelState.load()
+        if let diameter = saved.pillDiameter.map({ CGFloat($0) }),
+           Self.pillPresets.contains(where: { $0.diameter == diameter }) {
+            pillDiameter = diameter
+        } else {
+            pillDiameter = Self.defaultPillDiameter
+        }
+        expandedSize = saved.expandedSize.map {
+            NSSize(width: max($0.width, ExpandedView.minSize.width), height: max($0.height, ExpandedView.minSize.height))
+        } ?? ExpandedView.defaultSize
+        let pillSize = NSSize(width: pillDiameter, height: pillDiameter)
+        pillFrame = Self.initialPillFrame(from: saved, size: pillSize)
         panel = GlassPanel(contentRect: pillFrame)
 
-        glass = GlassBackgroundView(frame: NSRect(origin: .zero, size: Self.pillSize),
-                                    cornerRadius: Self.pillCornerRadius)
+        glass = GlassBackgroundView(frame: NSRect(origin: .zero, size: pillSize),
+                                    cornerRadius: pillDiameter / 2)
         glass.autoresizingMask = [.width, .height]
         pillView = PillView(frame: glass.contentView.bounds, harness: Harness(command: config.command),
                             title: config.pillTitle)
         pillView.autoresizingMask = [.width, .height]
-        expandedView = ExpandedView(title: config.pillTitle)
+        expandedView = ExpandedView(title: config.pillTitle, size: expandedSize)
         expandedView.isHidden = true
         expandedView.alphaValue = 0
         super.init()
@@ -88,6 +109,15 @@ final class PanelController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(screenParametersDidChange),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(liveResizeWillStart),
+            name: NSWindow.willStartLiveResizeNotification, object: panel)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(liveResizeDidEnd),
+            name: NSWindow.didEndLiveResizeNotification, object: panel)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(panelDidResize),
+            name: NSWindow.didResizeNotification, object: panel)
 
         panel.orderFrontRegardless()
         panel.refreshShadow()
@@ -118,7 +148,15 @@ final class PanelController: NSObject {
 
         pillFrame = panel.frame
         anchor = Self.anchor(for: pillFrame)
-        let target = Self.clamp(expandedFrame(fromPill: pillFrame), in: Self.screen(for: pillFrame))
+        let screen = Self.screen(for: pillFrame)
+        // A saved size larger than this screen shrinks to fit (while hidden, before animating).
+        let area = screen.visibleFrame.insetBy(dx: Self.clampInset, dy: Self.clampInset)
+        let fitted = NSSize(width: max(min(expandedSize.width, area.width), ExpandedView.minSize.width),
+                            height: max(min(expandedSize.height, area.height), ExpandedView.minSize.height))
+        if expandedView.frame.size != fitted {
+            expandedView.setFrameSize(fitted)
+        }
+        let target = Self.clamp(expandedFrame(fromPill: pillFrame), in: screen)
 
         glass.cornerRadius = Self.expandedCornerRadius
         panel.setTitledChrome(true)
@@ -131,6 +169,10 @@ final class PanelController: NSObject {
 
         animateFrame(to: target) { [weak self] in
             guard let self else { return }
+            // Resizable only once fully grown, so an edge drag can't fight the animation.
+            // (contentMinSize limits user resizes only; code-driven frames ignore it.)
+            panel.styleMask.insert(.resizable)
+            panel.contentMinSize = ExpandedView.minSize
             panel.refreshShadow()
             panel.makeKeyAndOrderFront(nil)
             if let focusTarget { panel.makeFirstResponder(focusTarget) }
@@ -143,10 +185,11 @@ final class PanelController: NSObject {
     }
 
     func collapse() {
-        guard state == .expanded, !isAnimating else { return }
+        guard state == .expanded, !isAnimating, !panel.inLiveResize else { return }
         isAnimating = true
         state = .collapsed
         removeClickOutsideMonitor()
+        panel.styleMask.remove(.resizable)
 
         // Drop key status so the underlying app's window gets keyboard input again.
         panel.makeFirstResponder(nil)
@@ -160,7 +203,7 @@ final class PanelController: NSObject {
 
         animateFrame(to: pillFrame) { [weak self] in
             guard let self else { return }
-            glass.cornerRadius = Self.pillCornerRadius
+            glass.cornerRadius = pillCornerRadius
             panel.setTitledChrome(false)  // also refreshes the shadow
             pillView.isHidden = false
             fade(pillView, to: 1) { [weak self] in
@@ -223,10 +266,10 @@ final class PanelController: NSObject {
         })
     }
 
-    /// Place the fixed-size ExpandedView at the anchor corner of the container and
-    /// keep it pinned there while the window grows or shrinks.
+    /// Place the ExpandedView at the anchor corner of the container and keep it pinned
+    /// there, at its own size, while the window grows or shrinks.
     private func pinExpandedView(containerSize: NSSize) {
-        let size = ExpandedView.size
+        let size = expandedView.frame.size
         let x = anchor.right ? containerSize.width - size.width : 0
         let y = anchor.top ? containerSize.height - size.height : 0
         expandedView.frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
@@ -245,7 +288,7 @@ final class PanelController: NSObject {
             // Follow the user: if the mouse is on another display, jump there first.
             let mouseScreen = Self.screenWithMouse()
             if Self.screenNumber(mouseScreen) != Self.screenNumber(Self.screen(for: pillFrame)) {
-                pillFrame = NSRect(origin: Self.defaultPillOrigin(on: mouseScreen), size: Self.pillSize)
+                pillFrame = NSRect(origin: Self.defaultPillOrigin(on: mouseScreen, size: pillSize), size: pillSize)
                 panel.setFrame(pillFrame, display: true)
                 saveState()
             }
@@ -284,6 +327,79 @@ final class PanelController: NSObject {
         saveState()
     }
 
+    // MARK: - Resizing (DESIGN §7.13, §7.14)
+
+    /// During a user resize the ExpandedView is pinned top-left (the header stays put) and
+    /// follows the window at most every `liveResizeInterval`, so the terminal reflows live
+    /// without a resize (and agent redraw) on every mouse move.
+    @objc private func liveResizeWillStart(_ notification: Notification) {
+        guard state == .expanded, !isAnimating else { return }
+        expandedView.autoresizingMask = [.maxXMargin, .minYMargin]
+    }
+
+    @objc private func panelDidResize(_ notification: Notification) {
+        guard state == .expanded, !isAnimating else { return }
+        guard panel.inLiveResize else {
+            // Resized some other way (e.g. a window-tiling command): apply it at once.
+            if expandedView.frame.size != glass.contentView.bounds.size { applyUserResize() }
+            return
+        }
+        guard !liveResizeUpdatePending else { return }
+        liveResizeUpdatePending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.liveResizeInterval) { [weak self] in
+            guard let self else { return }
+            liveResizeUpdatePending = false
+            guard state == .expanded, panel.inLiveResize else { return }
+            let size = glass.contentView.bounds.size
+            if expandedView.frame.size != size {
+                expandedView.frame = NSRect(origin: .zero, size: size)
+            }
+        }
+    }
+
+    @objc private func liveResizeDidEnd(_ notification: Notification) {
+        guard state == .expanded, !isAnimating else { return }
+        applyUserResize()
+    }
+
+    /// Final resize of the ExpandedView (and so the terminal) to the new size; save it.
+    private func applyUserResize() {
+        let frame = Self.clamp(panel.frame, in: Self.screen(for: panel.frame))
+        if frame != panel.frame {
+            panel.setFrame(frame, display: true)
+        }
+        let size = glass.contentView.bounds.size
+        expandedSize = size
+        expandedView.setFrameSize(size)
+        pinExpandedView(containerSize: size)
+        panel.refreshShadow()
+        pillFrame = pillFrame(fromExpanded: panel.frame)
+        saveState()
+        appLog("expanded size \(Int(size.width))x\(Int(size.height))")
+    }
+
+    /// Applies a pill size preset. Collapsed, the pill grows or shrinks from its nearest
+    /// screen corner; expanded, the next collapse uses it.
+    private func setPillDiameter(_ diameter: CGFloat) {
+        guard diameter != pillDiameter, !isAnimating else { return }
+        pillDiameter = diameter
+        pillView.setDiameter(diameter)
+        if state == .collapsed {
+            let corner = Self.anchor(for: pillFrame)
+            let x = corner.right ? pillFrame.maxX - diameter : pillFrame.minX
+            let y = corner.top ? pillFrame.maxY - diameter : pillFrame.minY
+            let frame = Self.clamp(NSRect(x: x, y: y, width: diameter, height: diameter),
+                                   in: Self.screen(for: pillFrame))
+            panel.setFrame(frame, display: true)
+            glass.cornerRadius = pillCornerRadius
+            panel.refreshShadow()
+            pillFrame = frame
+        } else {
+            pillFrame = pillFrame(fromExpanded: panel.frame)  // saved origin matches the new size
+        }
+        saveState()
+    }
+
     // MARK: - Observers
 
     @objc private func activeSpaceDidChange(_ notification: Notification) {
@@ -310,7 +426,9 @@ final class PanelController: NSObject {
     }
 
     private func saveState() {
-        PanelState(pillOrigin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY)).save()
+        PanelState(pillOrigin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY),
+                   pillDiameter: pillDiameter,
+                   expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height)).save()
     }
 
     // MARK: - Poppy menu (DESIGN §7.10)
@@ -341,6 +459,20 @@ final class PanelController: NSObject {
         // One line for both: "Set Hotkey (⌃⌥Space)", or just "Set Hotkey" when none is registered.
         var setTitle = "Set Hotkey"
         if let combo = hotKeys?.current { setTitle += " (\(combo.displayString))" }
+        let pillSizeItem = NSMenuItem(title: "Pill Size", action: nil, keyEquivalent: "")
+        let pillSizeMenu = NSMenu()
+        pillSizeMenu.autoenablesItems = false
+        for preset in Self.pillPresets {
+            let item = NSMenuItem(title: preset.name, action: #selector(selectPillSize(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(preset.diameter)
+            item.state = preset.diameter == pillDiameter ? .on : .off
+            item.isEnabled = !isAnimating
+            pillSizeMenu.addItem(item)
+        }
+        pillSizeItem.submenu = pillSizeMenu
+        menu.addItem(pillSizeItem)
+
         let setHotKey = NSMenuItem(title: setTitle, action: #selector(setHotKey), keyEquivalent: "")
         setHotKey.target = self
         setHotKey.isEnabled = hotKeys?.canRecord == true
@@ -398,6 +530,10 @@ final class PanelController: NSObject {
         _ = Config.saveValue(profile.command, forKey: "command")
     }
 
+    @objc private func selectPillSize(_ sender: NSMenuItem) {
+        setPillDiameter(CGFloat(sender.tag))
+    }
+
     @objc private func setHotKey() {
         hotKeys?.beginRecording()
     }
@@ -413,14 +549,14 @@ final class PanelController: NSObject {
     // MARK: - Frame math (DESIGN §7.3–7.6)
 
     private func expandedFrame(fromPill pill: NSRect) -> NSRect {
-        let size = ExpandedView.size
+        let size = expandedView.frame.size
         let x = anchor.right ? pill.maxX - size.width : pill.minX
         let y = anchor.top ? pill.maxY - size.height : pill.minY
         return NSRect(origin: NSPoint(x: x, y: y), size: size)
     }
 
     private func pillFrame(fromExpanded expanded: NSRect) -> NSRect {
-        let size = Self.pillSize
+        let size = pillSize
         let x = anchor.right ? expanded.maxX - size.width : expanded.minX
         let y = anchor.top ? expanded.maxY - size.height : expanded.minY
         return NSRect(origin: NSPoint(x: x, y: y), size: size)
@@ -432,7 +568,7 @@ final class PanelController: NSObject {
     }
 
     /// Saved origin if it's still on some screen (clamped), else the default position.
-    private static func initialPillFrame(from state: PanelState) -> NSRect {
+    private static func initialPillFrame(from state: PanelState, size pillSize: NSSize) -> NSRect {
         if let saved = state.pillOrigin {
             let rect = NSRect(x: saved.x, y: saved.y, width: pillSize.width, height: pillSize.height)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rect) }) {
@@ -440,10 +576,10 @@ final class PanelController: NSObject {
             }
         }
         let screen = NSScreen.main ?? NSScreen.screens[0]
-        return NSRect(origin: defaultPillOrigin(on: screen), size: pillSize)
+        return NSRect(origin: defaultPillOrigin(on: screen, size: pillSize), size: pillSize)
     }
 
-    static func defaultPillOrigin(on screen: NSScreen) -> NSPoint {
+    static func defaultPillOrigin(on screen: NSScreen, size pillSize: NSSize) -> NSPoint {
         let visible = screen.visibleFrame
         return NSPoint(x: visible.maxX - margin - pillSize.width, y: visible.minY + margin)
     }

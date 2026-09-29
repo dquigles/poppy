@@ -29,6 +29,10 @@ final class GlassPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { allowsKey }
+
+    /// No zoom: a double-click on the (hidden) titlebar area under the header would
+    /// otherwise resize the panel (DESIGN §7.13).
+    override func zoom(_ sender: Any?) {}
     override var canBecomeMain: Bool { false }
 
     /// While expanded the panel is a titled window with an invisible titlebar: macOS 26
@@ -39,12 +43,13 @@ final class GlassPanel: NSPanel {
     func setTitledChrome(_ titled: Bool) {
         guard styleMask.contains(.titled) != titled else { return }
         if titled {
+            // .resizable is added by PanelController once the expand animation ends (DESIGN §7.13).
             styleMask.formUnion([.titled, .fullSizeContentView])
             for button: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
                 standardWindowButton(button)?.isHidden = true
             }
         } else {
-            styleMask.subtract([.titled, .fullSizeContentView])
+            styleMask.subtract([.titled, .fullSizeContentView, .resizable])
         }
         refreshShadow()
     }
