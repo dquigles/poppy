@@ -35,6 +35,10 @@ final class PanelController: NSObject {
     private var anchor = Anchor(right: true, top: false)
     /// Global mouse-down monitor, installed only while fully expanded (DESIGN §6.3).
     private var clickOutsideMonitor: Any?
+    /// Set by AppDelegate; the menu shows and changes the hotkey through it (DESIGN §7.10).
+    weak var hotKeys: HotKeyManager? {
+        didSet { hotKeys?.onRecorderClosed = { [weak self] in self?.refocusIfExpanded() } }
+    }
 
     init(config: Config, session: TerminalSession?) {
         self.config = config
@@ -85,6 +89,13 @@ final class PanelController: NSObject {
     }
 
     private var focusTarget: NSView? { session?.focusView ?? placeholderField }
+
+    /// After the hotkey recorder closes over the expanded panel, give the terminal key back.
+    private func refocusIfExpanded() {
+        guard state == .expanded, !isAnimating else { return }
+        panel.makeKeyAndOrderFront(nil)
+        if let focusTarget { panel.makeFirstResponder(focusTarget) }
+    }
 
     /// After Restart Agent swaps the terminal view, keep typing going to the new one.
     private func refocusAfterRestart() {
@@ -316,23 +327,30 @@ final class PanelController: NSObject {
     private func populateMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        // One line for both: "Set Hotkey (⌃⌥Space)", or just "Set Hotkey" when none is registered.
+        var setTitle = "Set Hotkey"
+        if let combo = hotKeys?.current { setTitle += " (\(combo.displayString))" }
+        let setHotKey = NSMenuItem(title: setTitle, action: #selector(setHotKey), keyEquivalent: "")
+        setHotKey.target = self
+        setHotKey.isEnabled = hotKeys?.canRecord == true
+        menu.addItem(setHotKey)
+
+        menu.addItem(.separator())
+
         let restart = NSMenuItem(title: "Restart Agent", action: #selector(restartAgent), keyEquivalent: "")
         restart.target = self
         restart.isEnabled = session != nil
         menu.addItem(restart)
 
-        let collapse = NSMenuItem(title: "Collapse", action: #selector(collapseFromMenu), keyEquivalent: "")
-        collapse.target = self
-        collapse.isEnabled = state == .expanded && !isAnimating
-        menu.addItem(collapse)
+        menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit Poppy", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
     }
 
-    @objc private func collapseFromMenu() {
-        collapse()
+    @objc private func setHotKey() {
+        hotKeys?.beginRecording()
     }
 
     @objc private func restartAgent() {

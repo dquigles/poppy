@@ -63,9 +63,13 @@ final class GlassPanel: NSPanel {
         refreshShadow()
     }
 
+    /// Called after the panel stops being key (used by the hotkey recorder, DESIGN §11.2).
+    var onResignKey: (() -> Void)?
+
     override func resignKey() {
         super.resignKey()
         refreshShadow()
+        onResignKey?()
     }
 
     /// Poppy is never the active app and has no main menu, so menu key

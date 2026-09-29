@@ -20,7 +20,7 @@ Poppy is a native macOS utility. A small Liquid Glass "pill" floats in a screen 
 
 ### Concurrency rules
 - These are `nonisolated`:
-  - value types used with Codable (`Config`, `PanelState`)
+  - value types used with Codable (`Config`, `PanelState`), and `HotKeyCombo` with its nested `Key` table
   - `appLog` (§4)
   - the Carbon C handler (§11)
 - Code on the main thread that is not statically main-actor (the bodies of `NSAnimationContext` completion handlers, `NotificationCenter` block observers with `queue: .main`, and the Carbon handler) wraps its body in `MainActor.assumeIsolated { … }`. Never capture non-Sendable parameters (raw pointers, `Notification`) inside that closure; extract Sendable values first.
@@ -42,14 +42,17 @@ Sources/poppy/
   Views/ExpandedView.swift          ExpandedView + HeaderView (drag, title) + contentHost
   Terminal/TerminalSession.swift    TerminalSession + PoppyTerminalView
   Terminal/ShellEnvironment.swift   builds executable/args/env for the child
-  Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper + hotkey string parser
+  Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper (register/unregister)
+  Hotkey/HotKeyCombo.swift          key table: parse, config string, display, validity (§11.1)
+  Hotkey/HotKeyManager.swift        owns the hotkey, current combo and recorder (§11)
+  Hotkey/HotKeyRecorder.swift       "Set Hotkey" window (§11.2)
 Resources/Info.plist                used only by scripts/bundle.sh (not a SwiftPM resource)
 scripts/bundle.sh                   builds build/Poppy.app
 docs/DESIGN.md, docs/PROGRESS.md
 ```
 
 Ownership: strong references go downward; back-references are `weak`.
-- `AppDelegate` owns `config: Config`, `session: TerminalSession` (from M5), `controller: PanelController`, `hotKey: GlobalHotKey` (from M6), and `statusItem: NSStatusItem` (from M8; the item is removed from the menu bar when deallocated, so it must be retained).
+- `AppDelegate` owns `config: Config`, `session: TerminalSession` (from M5), `controller: PanelController`, `hotKeys: HotKeyManager` (from M10; M6–M9 held a `GlobalHotKey` directly), and `statusItem: NSStatusItem` (from M8; the item is removed from the menu bar when deallocated, so it must be retained).
 - `PanelController` is `final class PanelController: NSObject`; menu actions are `@objc` methods.
 - `PanelController.init(config:session:)` (from M4; M2–M3 use a temporary `init()` with no arguments and a hard-coded title `claude`):
   - It creates and owns the `GlassPanel`, `GlassBackgroundView`, `PillView` and `ExpandedView`.
@@ -79,8 +82,8 @@ Files are introduced in the milestone that needs them (§13).
   2. Load the config (§8.1).
   3. Create the session (M5+): `TerminalSession(config:)`. This only computes the launch spec; the process starts in `attach(to:)`.
   4. Create the controller. It shows the pill with `orderFrontRegardless()`.
-  5. Create the menu bar item (M8+, §7.12).
-  6. Register the hotkey (M6+).
+  5. Create the `HotKeyManager` (M10+; §11), which registers the hotkey, and set `controller.hotKeys`.
+  6. Create the menu bar item (M8+, §7.12).
 - `NSApp.activate` and `NSRunningApplication.activate` are **never** called.
 - `applicationWillTerminate`: `session?.terminateChild()` (§9.4).
 - Quitting: the Poppy menu's Quit (context menu or menu bar item, §7.10) calls `NSApp.terminate(nil)`. Under `swift run`, Ctrl-C in the launching shell also quits (default SIGINT; no handler).
@@ -90,7 +93,7 @@ Files are introduced in the milestone that needs them (§13).
 
 ## 5. The panel (`GlassPanel: NSPanel`)
 
-There is one panel for the app's whole lifetime. It is never closed, only resized.
+There is one Poppy panel for the app's whole lifetime. It is never closed, only resized. (From M10 the hotkey recorder, §11.2, is a separate, short-lived `GlassPanel`.)
 
 ```swift
 super.init(contentRect: rect,
@@ -119,7 +122,7 @@ Overrides:
 - `canBecomeMain` returns `false`.
 - `performKeyEquivalent(with:)` (§6.2).
 
-The panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1).
+The Poppy panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). (The hotkey recorder's own `GlassPanel` is covered by §11.2.)
 
 **Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` (re-hiding the three standard buttons, which AppKit recreates) at the start of `expand()`. It removes them in the collapse frame-animation completion. Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
 
@@ -174,7 +177,7 @@ The app is never active and has no main menu, so menu key equivalents never fire
 It returns the result of `sendAction`. Everything else, including Cmd-Q and Cmd-W, goes to `super` (so it is not handled; quitting is via the menu). All non-command keys reach the first responder unchanged, so Esc, Ctrl-C and the rest reach the terminal. SwiftTerm's Mac `TerminalView` implements `open func copy(_:)`, `open func paste(_:)` and `override func selectAll(_:)` (checked in v1.20.0 source).
 
 ### 6.3 Click outside collapses (M9)
-There is no collapse button; the panel collapses on a click outside it, with the hotkey while it is key (§11), or with the menu's Collapse item (§7.10).
+There is no collapse button; the panel collapses on a click outside it, or with the hotkey while it is key (§11). (M9 briefly had a Collapse menu item; the user removed it in M10.)
 - `PanelController.clickOutsideMonitor: Any?` holds an `NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseDown, .otherMouseDown])` monitor. The handler (called on the main thread) runs `MainActor.assumeIsolated { self?.clickedOutside() }`.
 - A global monitor only sees events delivered to **other** apps, so clicks inside the panel, on its right-click menu, or on Poppy's own menu bar item (§7.12) never collapse it. Mouse monitors need no Accessibility permission.
 - **Installed** in expand's final fade completion, just before `finishAnimation()`. Clicks during the expand animation are ignored.
@@ -307,9 +310,11 @@ In `PillView`, ignored while `isAnimating`:
 
 ### 7.10 Poppy menu (context menu and menu bar)
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
-- It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds three, each with explicit `target = self`:
+- It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
+  - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
+  - separator
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
-  - **"Collapse":** action `collapseFromMenu` calls `collapse()`. Enabled only if `state == .expanded && !isAnimating` (a fallback when there is no hotkey, and for keyboard/VoiceOver users).
+  - separator
   - **"Quit Poppy":** action `quit` calls `NSApp.terminate(nil)`.
 - `menuNeedsUpdate(_:)` calls `populateMenu(_:)` again, so the long-lived menu bar copy is rebuilt each time it opens and never shows stale state.
 - `PanelController.showContextMenu(event:in:)` shows `makeMenu()` with `NSMenu.popUpContextMenu(menu, with: event, for: view)`.
@@ -333,13 +338,19 @@ In `PillView`, ignored while `isAnimating`:
 
 The directory is `~/.config/poppy/`, created with intermediate directories if missing. Both types are `nonisolated struct … : Codable, Sendable`.
 
-### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4)
+### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey`, from M10)
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
 
 **Decoding**
 - A hand-written `init(from:)` uses `decodeIfPresent` for each key, falling back to the defaults above. Unknown keys are ignored.
+
+**Saving the hotkey** (M10, `static func saveHotkey(_ spec: String) -> Bool`)
+- Read config.json with `JSONSerialization` as a `[String: Any]`, set only `"hotkey"`, and write it back (pretty-printed, sorted keys, unescaped slashes, atomic). Every other key and value, including unknown keys, is kept as written; the `POPPY_COMMAND` override is never written.
+- `AppDelegate.config.hotkey` is not updated; nothing reads `config` after launch.
+- If the file is missing, write `{"hotkey": …}` alone (the other keys fall back to defaults on load).
+- If the file exists but can't be read or isn't a JSON object: log it, don't touch the file, return false.
 
 **Load rules**
 - **File missing:** write the defaults (pretty-printed, sorted keys) and use them.
@@ -462,24 +473,37 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 
 ## 11. Global hotkey (M6)
 
-**Registration**
-- `GlobalHotKey.init?(spec: String, action: @escaping @MainActor () -> Void)`: parses `spec` (falling back to `ctrl+opt+space` as below), installs the handler, registers the hotkey, and logs both OSStatus values. If either `InstallEventHandler` or `RegisterEventHotKey` returns non-zero, it cleans up whatever succeeded and returns `nil`. `AppDelegate` stores the optional result.
-- Handler: `InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)` (the ref is kept so a failed registration can `RemoveEventHandler`). Both OSStatus values are logged.
-  - `spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))`.
-- Hotkey: `RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: 0x506F_7079 /* 'Popy' */, id: 1), GetApplicationEventTarget(), 0, &ref)`.
+**Ownership (M10).** `AppDelegate` owns a `HotKeyManager` (`Hotkey/HotKeyManager.swift`) and hands it to `PanelController.hotKeys` (weak), so the menu can show and change the hotkey (§7.10). The manager owns `GlobalHotKey?`, `current: HotKeyCombo?` (the chosen combo) and the recorder (§11.2).
+
+**`HotKeyManager.init(spec:action:)`**
+- `GlobalHotKey(action:)`; nil if the handler can't be installed (then there is no hotkey and "Set Hotkey" is disabled).
+- `HotKeyCombo(spec: config.hotkey)`; if nil, log it and use `Config.defaultHotkey` (`ctrl+opt+space`).
+- `register(combo)`; `current = combo` only if it returned `noErr`. Otherwise log it and continue without a hotkey (the menu item reads just "Set Hotkey").
+
+**`GlobalHotKey`** (`final class`, the Carbon wrapper)
+- `init?(action: @escaping @MainActor () -> Void)`: `InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)`, with `spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))`. Logs the OSStatus; returns nil if non-zero. The handler stays installed for the app's lifetime.
+- `register(_ combo: HotKeyCombo) -> OSStatus` (discardable): `unregister()`, then `RegisterEventHotKey(combo.keyCode, combo.modifiers, EventHotKeyID(signature: 0x506F_7079 /* 'Popy' */, id: 1), GetApplicationEventTarget(), 0, &ref)`. Logs `"hotkey <spec> registered: OSStatus N"`. On `noErr` stores the ref and `registered = combo`.
+- `unregister()`: `UnregisterEventHotKey` if registered; `registered = nil`.
+- `private(set) var registered: HotKeyCombo?`.
 
 **The handler**
 - `hotKeyHandler` is a file-scope `nonisolated` function matching `EventHandlerProcPtr`.
 - It reads the `EventHotKeyID` with `GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, size, nil, &id)`.
-- If `id.signature` is `'Popy'` and `id.id == 1` (otherwise return `eventNotHandledErr`): first `let hk = Unmanaged<GlobalHotKey>.fromOpaque(userData!).takeUnretainedValue()` **outside** any closure (`GlobalHotKey` is main-actor, therefore Sendable; the raw `userData` pointer must not be captured), then `MainActor.assumeIsolated { hk.action() }`.
+- If `id.signature` is `'Popy'` and `id.id == 1` (otherwise return `eventNotHandledErr`): first `let hk = Unmanaged<GlobalHotKey>.fromOpaque(userData!).takeUnretainedValue()` **outside** any closure (`GlobalHotKey` is main-actor, therefore Sendable; the raw `userData` pointer must not be captured), then `MainActor.assumeIsolated { hk.fire() }` (`fire()` is `fileprivate` and calls the private `action`).
 - It returns `noErr`.
 
-**Logging and teardown**
-- `appLog("hotkey \(string) registered: OSStatus \(status)")`. On a non-zero status, log it and continue without a hotkey.
-- `AppDelegate` keeps `GlobalHotKey` alive for the app's lifetime.
+**Action** (`PanelController.hotkeyPressed()`, ignored while animating)
+- **Collapsed:**
+  1. If `screenWithMouse()` differs from `screen(for: pillFrame)` (compared by screen number, §7.2), move the pill to the default position (§7.3) on the mouse's screen and save the state.
+  2. `expand()`.
+- **Expanded and `panel.isKeyWindow`:** `collapse()`.
+- **Expanded and not key:** `panel.makeKeyAndOrderFront(nil)` plus first responder = `focusTarget`.
 
-**Parser** (`nonisolated static func parse(_ s: String) -> (keyCode: UInt32, modifiers: UInt32)?`)
-- Lowercase the string and split it on `+`.
+### 11.1 `HotKeyCombo` (`Hotkey/HotKeyCombo.swift`, M10)
+`nonisolated struct HotKeyCombo: Equatable, Sendable { var keyCode: UInt32; var modifiers: UInt32 }` (Carbon key code and Carbon modifier mask). One key table drives parsing, the canonical config string, display and recording.
+
+**`init?(spec:)`**
+- Lowercase the string and split it on `+` (empty pieces dropped).
 - Modifier tokens:
 
   | Token | Carbon constant (cast to `UInt32`) |
@@ -489,19 +513,45 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
   | `cmd`, `command` | `cmdKey` |
   | `shift` | `shiftKey` |
 
-- Exactly one key token:
-  - `a`–`z` and `0`–`9` map to `kVK_ANSI_*` (US layout).
-  - `space` maps to `kVK_Space`.
-  - `f1`–`f12` map to `kVK_F1`…`kVK_F12`.
-- At least one modifier is required, unless the key is F1–F12.
-- Invalid string: log it and use `ctrl+opt+space`.
+- Exactly one key token. The first token listed is canonical (written back to config.json); the others are accepted aliases:
 
-**Action** (`PanelController.hotkeyPressed()`, ignored while animating)
-- **Collapsed:**
-  1. If `screenWithMouse()` differs from `screen(for: pillFrame)` (compared by screen number, §7.2), move the pill to the default position (§7.3) on the mouse's screen and save the state.
-  2. `expand()`.
-- **Expanded and `panel.isKeyWindow`:** `collapse()`.
-- **Expanded and not key:** `panel.makeKeyAndOrderFront(nil)` plus first responder = `focusTarget`.
+  | Keys | Tokens | Display |
+  |---|---|---|
+  | `a`–`z`, `0`–`9` (`kVK_ANSI_*`, US layout) | the character | uppercase character |
+  | `` ` `` `-` `=` `[` `]` `\` `;` `'` `,` `.` `/` | `grave`, `minus`, `equal`, `leftbracket`, `rightbracket`, `backslash`, `semicolon`, `quote`, `comma`, `period`, `slash`; or the character | the character |
+  | Space, Return, Tab, Escape | `space`; `return`/`enter`; `tab`; `escape`/`esc` | `Space` `↩` `⇥` `⎋` |
+  | Delete, Forward Delete | `delete`/`backspace`; `forwarddelete` | `⌫` `⌦` |
+  | Arrows | `left` `right` `up` `down` | `←` `→` `↑` `↓` |
+  | Home, End, Page Up, Page Down | `home` `end` `pageup` `pagedown` | `↖` `↘` `⇞` `⇟` |
+  | F1–F20 (`kVK_F1`…`kVK_F20`) | `f1`…`f20` | `F1`…`F20` |
+
+- **Validity rule** (`static func check(keyCode:modifiers:) -> Problem?`, shared by parsing and recording): the key must be in the table (`.unsupportedKey`), and any key except F1–F20 needs at least one of ⌃, ⌥ or ⌘ (`.needsModifier`). ⇧ alone is not enough, since it would swallow typed capitals system-wide. (Before M10, `shift+<letter>` was accepted.)
+- Invalid string: nil (the manager logs it and uses the default).
+
+**Other members**
+- `init(keyCode:modifiers:)`, used by the recorder after `check` passes.
+- `static func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32`: ⌃⌥⇧⌘ only; fn, Caps Lock and keypad flags are ignored.
+- `spec`: canonical string with modifiers in the order `ctrl`, `opt`, `shift`, `cmd`, then the key, e.g. `ctrl+opt+space`.
+- `displayString`: modifier symbols in Apple's order ⌃⌥⇧⌘, then the key's display, e.g. `⌃⌥Space`. `static func modifierSymbols(_:)` gives the symbols alone.
+
+### 11.2 Hotkey recorder (`Hotkey/HotKeyRecorder.swift`, M10)
+Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
+- If a recorder is already open, `show()` it again. Otherwise `hotKey.unregister()` (so pressing the current hotkey is recorded instead of toggling the panel), create the recorder and `show()` it.
+- **Window:** a `GlassPanel` (§5), 340×140, `allowsKey = true`, `setTitledChrome(true)` (rounded key outline), content a `GlassBackgroundView` with radius 20. Centered horizontally on `PanelController.screenWithMouse().visibleFrame`, and a sixth of its height above center. `show()` = `makeKeyAndOrderFront(nil)` + `refreshShadow()`. Like the expanded panel, it becomes key without activating Poppy. 0.5 s later, if it isn't closed and `!panel.isKeyWindow`, log it and close (no refocus): otherwise it could never be dismissed and the hotkey would stay suspended.
+- **Contents:** a vertical `NSStackView`, centered, spacing 6: "Poppy hotkey" (12 pt, secondary); the combo label (24 pt medium, starts as "Press a shortcut"); the hint (11 pt, wrapping, centered, secondary; red for errors), initially "Current: ⌃⌥Space · Esc to cancel" (or "none").
+- **Keys:** an `NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged])` monitor, installed on the first `show()` and removed on close. It sees keys before key equivalents (so `GlassPanel`'s ⌘C/V/A routing doesn't fire) and returns nil to swallow them. Events whose `window !== panel` pass through. The handler isn't `@Sendable`, so it is main-actor isolated and calls `handle(_:)` directly (no `assumeIsolated`, which can't capture the non-Sendable `NSEvent`).
+  - `flagsChanged`: the combo label shows the held modifier symbols plus "…" (or "Press a shortcut" when none); pass the event through.
+  - `keyDown` repeats are swallowed. Escape with no modifiers closes (cancel).
+  - `check` fails: combo label resets, hint in red: "That key can't be used." or "Add ⌃, ⌥ or ⌘ (F-keys work alone).", each followed by "Esc to cancel". Stay open.
+  - Otherwise show `displayString` and call the manager's `record(combo)`:
+    - `register` fails: `.failed("<combo> couldn't be registered (OSStatus N). Try another.")`; the hint shows it; stay open.
+    - Success: `current = combo`, then `Config.saveHotkey(combo.spec)` (§8.1). Saved: `.saved`, the recorder closes. Not saved: `.notSaved`; `unregister()` again so the hotkey stays suspended while the recorder is open, the hint says it will be active but resets on relaunch, and Esc closes (which registers `current`).
+- **Close** (`close(refocus:)`, idempotent): `refocus` is true for Esc and a successful save, false for losing key status and the not-key timeout. `onResignKey` closes via `DispatchQueue.main.async`, because closing releases the panel, which must not happen inside its own `resignKey`. Remove the monitor, clear `onResignKey`, `allowsKey = false`, `orderOut`, then call the manager's `recorderClosed(refocus:)`:
+  - `recorder = nil`.
+  - If `hotKey.registered != current`, `register(current)` (restores the old hotkey after a cancel or a failed attempt). If that fails, `current = nil`, so the menu doesn't show a hotkey that doesn't work.
+  - If `refocus`, call `onRecorderClosed`, which `PanelController` sets (in `hotKeys`' `didSet`) to `refocusIfExpanded()`: if expanded and not animating, `panel.makeKeyAndOrderFront(nil)` and first responder = `focusTarget`. Not after a click elsewhere, so focus stays where the user put it.
+- Recording stores the physical key code; the display uses US-layout names (§11.1), so on other layouts (e.g. AZERTY) the shown character can differ from the key's printed label.
+- Shortcuts owned by the system or another app (e.g. ⌘Space for Spotlight) are generally intercepted before they reach the recorder, so they can't be recorded.
 
 ## 12. Packaging (M7)
 
@@ -542,6 +592,7 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 | M7 | `scripts/bundle.sh`, `Resources/Info.plist`, `.gitignore` `/build` | — |
 | M8 | Menu bar item (§7.12); `PanelController.makeMenu()` shared with the context menu (§7.10) | — |
 | M9 | Click outside collapses (§6.3); collapse button removed (§7.9) | — |
+| M10 | `HotKeyCombo` with more keys (§11.1), `HotKeyManager`, register/unregister `GlobalHotKey` (§11), the recorder (§11.2), hotkey shown in the Set Hotkey menu item and the Collapse item removed (§7.10), `Config.saveHotkey` (§8.1) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -563,3 +614,4 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 9. Whether `panel.animator().setFrame` honors `ctx.timingFunction` (easing only; judged by eye): M4.
 10. The menu bar item's menu doesn't activate Poppy or take key/frontmost from the underlying app, collapsed or expanded: M8.
 11. Whether the global mouse monitor fires for clicks on other apps over fullscreen Spaces, on the desktop, and on other menu bar items, without Accessibility permission, both unbundled and bundled; and that dragging a file from Finder into the expanded terminal doesn't collapse it: M9.
+12. Whether the recorder panel becomes key and receives keys (including ⌘ combos) without activating Poppy, over fullscreen apps too, and whether a changed hotkey takes effect immediately; the recorder can always be dismissed; and keyboard focus returns to the underlying app after it closes over the collapsed pill: M10.

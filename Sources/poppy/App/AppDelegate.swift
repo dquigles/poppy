@@ -4,7 +4,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var config = Config()
     private var session: TerminalSession?
     private var controller: PanelController?
-    private var hotKey: GlobalHotKey?
+    private var hotKeys: HotKeyManager?
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,10 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.session = session
         let controller = PanelController(config: config, session: session)
         self.controller = controller
-        statusItem = makeStatusItem(menu: controller.makeMenu())
-        hotKey = GlobalHotKey(spec: config.hotkey) { [weak self] in
+        let hotKeys = HotKeyManager(spec: config.hotkey) { [weak self] in
             self?.controller?.hotkeyPressed()
         }
+        self.hotKeys = hotKeys
+        controller.hotKeys = hotKeys
+        statusItem = makeStatusItem(menu: controller.makeMenu())
     }
 
     func applicationWillTerminate(_ notification: Notification) {

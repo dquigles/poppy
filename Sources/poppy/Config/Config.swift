@@ -68,6 +68,37 @@ nonisolated struct Config: Codable, Sendable {
         return config
     }
 
+    /// Writes only the "hotkey" key into config.json, keeping every other key and
+    /// value as the user wrote them (DESIGN §8.1). Refuses to touch a file that
+    /// doesn't parse as a JSON object. Returns false on failure.
+    static func saveHotkey(_ spec: String) -> Bool {
+        let url = ConfigPaths.config
+        var object: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: url.path) {
+            do {
+                guard let parsed = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+                    appLog("config.json is not a JSON object; hotkey not saved")
+                    return false
+                }
+                object = parsed
+            } catch {
+                appLog("config.json could not be read; hotkey not saved: \(error)")
+                return false
+            }
+        }
+        object["hotkey"] = spec
+        do {
+            let data = try JSONSerialization.data(withJSONObject: object,
+                                                  options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            try ConfigPaths.write(data, to: url)
+            appLog("saved hotkey \(spec) to \(url.path)")
+            return true
+        } catch {
+            appLog("could not save hotkey: \(error)")
+            return false
+        }
+    }
+
     /// lastPathComponent of the command's first word, e.g. "/usr/local/bin/claude --x" -> "claude".
     var pillTitle: String {
         let first = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? command
