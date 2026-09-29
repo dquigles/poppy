@@ -43,15 +43,34 @@ final class GlassPanel: NSPanel {
     func setTitledChrome(_ titled: Bool) {
         guard styleMask.contains(.titled) != titled else { return }
         if titled {
-            // .resizable is added by PanelController once the expand animation ends (DESIGN §7.13).
+            // .resizable is added via setResizable(true) once the expand animation ends (DESIGN §7.13).
             styleMask.formUnion([.titled, .fullSizeContentView])
-            for button: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
-                standardWindowButton(button)?.isHidden = true
-            }
         } else {
             styleMask.subtract([.titled, .fullSizeContentView, .resizable])
         }
         refreshShadow()
+    }
+
+    /// AppKit recreates the traffic-light buttons when a titled window's style mask changes
+    /// (observed for .titled and .resizable), so hide them after every change, whatever
+    /// made it (DESIGN §5).
+    override var styleMask: NSWindow.StyleMask {
+        didSet { hideStandardButtons() }
+    }
+
+    /// Edge/corner resizing while expanded (DESIGN §7.13).
+    func setResizable(_ resizable: Bool) {
+        if resizable {
+            styleMask.insert(.resizable)
+        } else {
+            styleMask.remove(.resizable)
+        }
+    }
+
+    private func hideStandardButtons() {
+        for button: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            standardWindowButton(button)?.isHidden = true
+        }
     }
 
     /// The window shadow also draws the bright rim around the glass, so its shape must

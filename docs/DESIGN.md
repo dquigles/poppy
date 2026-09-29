@@ -129,7 +129,7 @@ Overrides:
 
 The Poppy panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). (The hotkey recorder's own `GlassPanel` is covered by §11.2.)
 
-**Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` (re-hiding the three standard buttons, which AppKit recreates) at the start of `expand()`. It removes them, and `.resizable` (added after the expand animation, §7.13), in the collapse frame-animation completion. `zoom(_:)` is a no-op (§7.13). Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
+**Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` at the start of `expand()`. AppKit recreates the three standard (traffic-light) buttons when a titled window's style mask changes (observed for `.titled` and `.resizable`), so `GlassPanel` overrides `styleMask` with a `didSet` that hides them again after **every** change, whatever made it. It removes them, and `.resizable` (added after the expand animation, §7.13), in the collapse frame-animation completion. `zoom(_:)` is a no-op (§7.13). Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
 
 **Shadow shape.** `GlassPanel.refreshShadow()` calls `invalidateShadow()` now and again via `DispatchQueue.main.async` (the glass renders its new shape a pass later; a shadow computed too early came out square around the expanded panel). It is called from `becomeKey()`/`resignKey()` overrides (key windows use a stronger shadow), in every frame-animation and fade completion, and after every drag end. The expand/collapse steps in §7.7 that say `invalidateShadow()` mean `refreshShadow()`.
 
@@ -269,13 +269,13 @@ The expanded frame keeps that corner of the pill fixed (bottom-right means `maxX
 4. Hide `PillView` (`alphaValue = 0`, `isHidden = true`).
 5. Position `ExpandedView` and set its mask. Set `alphaValue = 0`, `isHidden = false`.
 6. Animate the frame. In its completion:
-   1. Insert `.resizable` and set `contentMinSize` (§7.13); `invalidateShadow()`.
+   1. `panel.setResizable(true)` and set `contentMinSize` (§7.13); `invalidateShadow()`.
    2. Focus (§6.1).
    3. Fade `ExpandedView` to 1.
    4. In the fade's completion, `isAnimating = false`.
 
 **Collapse:**
-1. Return if `panel.inLiveResize` (§7.13). `isAnimating = true`; remove `.resizable`.
+1. Return if `panel.inLiveResize` (§7.13). `isAnimating = true`; `panel.setResizable(false)`.
 2. Release focus (§6.1).
 3. Compute `pillFrame` (§7.6).
 4. `ExpandedView.alphaValue = 0`, `isHidden = true`.
@@ -350,7 +350,7 @@ In `PillView`, ignored while `isAnimating`:
 - The accessory policy is unchanged: no Dock icon, and opening the menu does not activate Poppy.
 
 ### 7.13 Resizing the expanded panel (M13)
-- While expanded the panel is titled (§5). In expand's frame-animation completion, once fully grown, `PanelController` inserts `.resizable` into the style mask (not earlier, so an edge drag can't fight the grow animation) and sets `panel.contentMinSize = ExpandedView.minSize` (480 × 300; it limits user resizes only, code-driven frames ignore it). `.resizable` is removed at the start of collapse (and `setTitledChrome(false)` removes it too). So the system provides edge and corner resizing, cursors included. `isMovable` stays false; moving is still the header drag.
+- While expanded the panel is titled (§5). In expand's frame-animation completion, once fully grown (not earlier, so an edge drag can't fight the grow animation), `PanelController` calls `panel.setResizable(true)` and sets `panel.contentMinSize = ExpandedView.minSize` (480 × 300; it limits user resizes only, code-driven frames ignore it). `GlassPanel.setResizable(_:)` inserts or removes `.resizable`. At the start of collapse `PanelController` calls `panel.setResizable(false)` (and `setTitledChrome(false)` also removes `.resizable`). So the system provides edge and corner resizing, cursors included. `isMovable` stays false; moving is still the header drag.
 - `GlassPanel.zoom(_:)` is overridden to do nothing, so double-clicking the hidden titlebar area under the header can't resize the panel.
 - `PanelController.expandedSize` is the size the user chose; loaded from `state.json` (each dimension at least the minimum), else `ExpandedView.defaultSize`.
 - **At expand**, before animating: fit it to the screen, each dimension `max(min(expandedSize, visibleFrame inset by 8), minSize)`, and if that differs from the ExpandedView's current size, `setFrameSize` it (it's hidden, so the terminal's one resize is invisible). `expandedSize` itself isn't changed. `expandedFrame(fromPill:)` and `pinExpandedView` use the ExpandedView's current size.

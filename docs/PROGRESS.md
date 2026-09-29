@@ -108,6 +108,7 @@ Workflow per milestone:
   - Review: the probe now uses posix_spawn with setsid, reads until the shell exits, and SIGKILLs the group after 5 s (tested with a SIGTERM-ignoring shell and a shell leaving a background job); a bad `agents` entry no longer discards the whole config; the launch command stays in the list after switching away; `probeWord` skips `NAME=value`, expands `~/`, and skips quoted words.
 - M13: the expanded panel resizes by its edges/corners (system resizing on the titled panel); the terminal reflows while dragging, coalesced to ~20/s (the user asked for live reflow over reflow-on-release), and the size is saved. Pill Size ▸ Small 36 / Medium 44 / Large 56. Verified by the user; closes risk 15.
   - Review: `.resizable` only after the expand animation; zoom disabled; non-live resizes (tiling) applied at once; the saved pill origin matches a size changed while expanded. Rejected: silencing the per-resize `terminal size` log (debug stderr only, useful).
+- M13 follow-up: the traffic-light buttons reappeared after M13 (making the panel resizable after the expand animation changes the style mask, and AppKit recreates the buttons). Fixed by hiding them in a `styleMask` `didSet` in `GlassPanel`. Verified by the user.
 
 ## Known issues
 - Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.

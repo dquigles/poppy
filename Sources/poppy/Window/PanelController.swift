@@ -171,7 +171,7 @@ final class PanelController: NSObject {
             guard let self else { return }
             // Resizable only once fully grown, so an edge drag can't fight the animation.
             // (contentMinSize limits user resizes only; code-driven frames ignore it.)
-            panel.styleMask.insert(.resizable)
+            panel.setResizable(true)
             panel.contentMinSize = ExpandedView.minSize
             panel.refreshShadow()
             panel.makeKeyAndOrderFront(nil)
@@ -189,7 +189,7 @@ final class PanelController: NSObject {
         isAnimating = true
         state = .collapsed
         removeClickOutsideMonitor()
-        panel.styleMask.remove(.resizable)
+        panel.setResizable(false)
 
         // Drop key status so the underlying app's window gets keyboard input again.
         panel.makeFirstResponder(nil)
