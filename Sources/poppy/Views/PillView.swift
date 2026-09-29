@@ -19,6 +19,10 @@ final class PillView: NSView {
     private var baseLabel = ""
     private var status = AgentStatus.idle
     private var logoHeight: NSLayoutConstraint?
+    /// The 5-hour usage ring just inside the glass edge, uncolored and with no track
+    /// (DESIGN §7.11, §9.7).
+    private let ring = CAShapeLayer()
+    private var usage: UsageWindow?
 
     /// `title` names the CLI (DESIGN §7.11); it labels the pill when the harness isn't recognized.
     init(frame: NSRect, harness: Harness, title: String) {
@@ -38,6 +42,12 @@ final class PillView: NSView {
         ])
         logoWidth = width
         logoHeight = height
+
+        wantsLayer = true
+        ring.fillColor = nil
+        ring.lineCap = .round
+        ring.isHidden = true
+        layer?.addSublayer(ring)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         update(harness: harness, title: title)
@@ -65,8 +75,50 @@ final class PillView: NSView {
         case .waiting: " (needs input)"
         case .done: " (done)"
         }
-        toolTip = baseLabel + suffix
-        setAccessibilityLabel(baseLabel + suffix)
+        var usageSuffix = ""
+        if let usage {
+            usageSuffix = " · \(UsageStyle.percent(usage.usedPercent)) of \(usage.label(fallback: "5h")) used"
+        }
+        toolTip = baseLabel + suffix + usageSuffix
+        setAccessibilityLabel(baseLabel + suffix + usageSuffix)
+    }
+
+    /// The short window's usage for the ring; nil hides it (DESIGN §7.11).
+    func setUsage(_ window: UsageWindow?) {
+        guard window != usage else { return }
+        usage = window
+        ring.isHidden = window == nil
+        ring.strokeEnd = (window?.usedPercent ?? 0) / 100
+        updateRingColors()
+        updateLabel()
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let lineWidth = 2.5 * bounds.width / 44
+        let radius = bounds.width / 2 - lineWidth / 2 - 1.5
+        let path = CGMutablePath()
+        // From 12 o'clock, clockwise (the layer's y axis points up).
+        path.addArc(center: CGPoint(x: bounds.midX, y: bounds.midY), radius: max(radius, 1),
+                    startAngle: .pi / 2, endAngle: .pi / 2 - 2 * .pi, clockwise: true)
+        ring.frame = bounds
+        ring.path = path
+        ring.lineWidth = lineWidth
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateRingColors()
+    }
+
+    /// Layers take CGColors, so dynamic colors are resolved for the current appearance.
+    private func updateRingColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            ring.strokeColor = UsageStyle.ringColor
+        }
     }
 
     /// Called when the pill size preset changes (DESIGN §7.14).

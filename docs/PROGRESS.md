@@ -25,6 +25,7 @@ Workflow per milestone:
 | M12 | Agent switching from the menu (no context carry-over) | done |
 | M13 | Resizable expanded panel (drag edges/corners, terminal reflows live); pill size presets | done |
 | M14 | Agent status hooks (all four agents): status-colored pill (menu bar icon unchanged, per the user); Auto-Open when input is needed / done, with or without taking focus | done |
+| M15 | Usage meters (Claude, Codex): footer in the expanded view with % left and reset countdowns; 5-hour ring around the pill; Show Usage menu toggle | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -120,3 +121,4 @@ Workflow per milestone:
 ## Deferred review notes
 - (done in M5) Create the placeholder field only when `session == nil` (M4 review).
 - (resolved in M4) Observer cleanup: M4 uses selector-based `NotificationCenter` observers, which unregister automatically, instead of block observers removed in `deinit`. This also avoids nonisolated-deinit problems.
+- M15: usage meters for Claude (OAuth usage endpoint + Claude Code's Keychain login) and Codex (`codex app-server` rate-limit RPC), modeled on platoon: footer in the expanded view (% left, reset countdown), 5-hour ring on the pill (uncolored, no track, per the user), Show Usage toggle. The installed-CLI probe moved onto the new `ChildProcess` helper. Fix after the user's test: the ring stayed white in light mode (color resolved once). Goldfish review fixed: a window already reset no longer hides the whole report; Keychain read gets 60 s and isn't retried after a refusal; Codex app-server gets stdin EOF and 1 s to exit before SIGKILL; `@concurrent` Claude fetch; `FD_CLOEXEC` pipes; EINTR-safe `waitpid`; cache keyed per command. Rejected: microsecond date parsing (verified it parses); `Harness` with `NAME=value` prefixes (it already skips them, M14).

@@ -109,79 +109,12 @@ final class AgentCatalog {
             + "command -v \"$c\" >/dev/null 2>&1 && printf 'POPPY_AGENT:%s\\n' \"$c\"; done"
     }
 
-    /// Runs the probe shell in its own session (setsid: no controlling terminal, so under
-    /// `swift run` it can't touch the launching terminal), with stdin/stderr on /dev/null.
-    /// Reads until the shell exits, not until EOF (a background job from the dotfiles may
-    /// hold the pipe open), polling every 100 ms. After `probeTimeout` it SIGKILLs the
-    /// whole process group (interactive shells ignore SIGTERM) and returns nil. Nil on
-    /// any failure.
+    /// Runs the probe shell (DESIGN §9.5) until it exits; nil on failure, timeout, or
+    /// if it was killed by a signal.
     private nonisolated static func runProbe(_ spec: LaunchSpec) -> Set<String>? {
-        var fds: [Int32] = [0, 0]
-        guard pipe(&fds) == 0 else { return nil }
-        let (readEnd, writeEnd) = (fds[0], fds[1])
-
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_adddup2(&actions, writeEnd, 1)
-        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
-        posix_spawn_file_actions_addchdir_np(&actions, spec.currentDirectory)
-
-        var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
-        defer { posix_spawnattr_destroy(&attributes) }
-        // New session; close every descriptor not set up above (e.g. the agent's pty).
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
-
-        let argv = ([spec.executable] + spec.args).map { strdup($0) } + [nil]
-        let envp = spec.environment.map { strdup($0) } + [nil]
-        defer { (argv + envp).forEach { free($0) } }
-
-        var pid: pid_t = 0
-        let spawnError = posix_spawn(&pid, spec.executable, &actions, &attributes, argv, envp)
-        close(writeEnd)
-        guard spawnError == 0 else {
-            close(readEnd)
-            appLog("agent probe failed to start: errno \(spawnError)")
-            return nil
-        }
-        defer { close(readEnd) }
-        _ = fcntl(readEnd, F_SETFL, fcntl(readEnd, F_GETFL) | O_NONBLOCK)
-
-        let deadline = Date().addingTimeInterval(probeTimeout)
-        var output = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        var eof = false
-        /// Reads whatever is available now; sets `eof` when the pipe closes.
-        func drain() {
-            while !eof {
-                let n = read(readEnd, &buffer, buffer.count)
-                if n > 0 { output.append(contentsOf: buffer[0..<n]) } else { eof = n == 0; return }
-            }
-        }
-        var status: Int32 = 0
-        while true {
-            if eof {
-                usleep(50_000)
-            } else {
-                var pfd = pollfd(fd: readEnd, events: Int16(POLLIN), revents: 0)
-                _ = poll(&pfd, 1, 100)
-                drain()
-            }
-            if waitpid(pid, &status, WNOHANG) == pid {
-                drain()  // everything the shell wrote before exiting
-                break
-            }
-            if Date() > deadline {
-                appLog("agent probe timed out")
-                kill(-pid, SIGKILL)
-                kill(pid, SIGKILL)
-                waitpid(pid, &status, 0)
-                return nil
-            }
-        }
-        guard status & 0x7f == 0 else { return nil }  // killed by a signal
+        guard let result = ChildProcess.run(spec, label: "agent probe", timeout: probeTimeout),
+              result.exitedNormally else { return nil }
+        let output = result.output
 
         var found = Set<String>()
         for line in String(decoding: output, as: UTF8.self).split(separator: "\n")

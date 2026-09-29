@@ -30,6 +30,8 @@ nonisolated struct Config: Codable, Sendable {
     var autoOpenOnDone = false
     /// Auto-open takes the keyboard (true) or only shows the panel (DESIGN §7.15). Default true.
     var autoOpenFocus = true
+    /// Usage footer and pill ring (DESIGN §9.7). Default true.
+    var showUsage = true
 
     init(command: String = Config.defaultCommand, cwd: String = Config.defaultCwd, hotkey: String = Config.defaultHotkey) {
         self.command = command
@@ -47,6 +49,7 @@ nonisolated struct Config: Codable, Sendable {
         autoOpenOnInput = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnInput)) ?? false
         autoOpenOnDone = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnDone)) ?? false
         autoOpenFocus = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenFocus)) ?? true
+        showUsage = (try? c.decodeIfPresent(Bool.self, forKey: .showUsage)) ?? true
         // A bad "agents" entry must not discard the rest of the file: drop the whole list.
         do {
             agents = try c.decodeIfPresent([AgentProfile].self, forKey: .agents)?.filter {

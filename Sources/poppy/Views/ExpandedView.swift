@@ -12,6 +12,8 @@ final class ExpandedView: NSView {
 
     let header: HeaderView
     let contentHost: NSView
+    /// Usage footer (DESIGN §7.9, §9.7); hidden unless the agent has usage to show.
+    let usageBar: UsageBar
 
     init(title: String, size: NSSize) {
         header = HeaderView(frame: NSRect(x: 0, y: size.height - Self.headerHeight,
@@ -20,6 +22,7 @@ final class ExpandedView: NSView {
         contentHost = NSView(frame: NSRect(x: Self.contentInset, y: Self.contentInset,
                                            width: size.width - 2 * Self.contentInset,
                                            height: size.height - Self.headerHeight - Self.contentInset))
+        usageBar = UsageBar(frame: NSRect(x: 0, y: 0, width: size.width, height: UsageBar.height))
         super.init(frame: NSRect(origin: .zero, size: size))
 
         // Children follow the view's own frame when PanelController resizes it.
@@ -28,8 +31,23 @@ final class ExpandedView: NSView {
         contentHost.wantsLayer = true
         contentHost.layer?.cornerRadius = 10
         contentHost.layer?.masksToBounds = true
+        usageBar.autoresizingMask = [.width, .maxYMargin]
+        usageBar.isHidden = true
         addSubview(header)
         addSubview(contentHost)
+        addSubview(usageBar)
+    }
+
+    /// Shows or hides the usage footer, moving the content's bottom edge (a terminal
+    /// resize, so only on a harness or setting change, DESIGN §7.9).
+    func setUsageVisible(_ visible: Bool) {
+        guard usageBar.isHidden == visible else { return }
+        usageBar.isHidden = !visible
+        let bottom = visible ? UsageBar.height : Self.contentInset
+        var frame = contentHost.frame
+        frame.size.height = frame.maxY - bottom
+        frame.origin.y = bottom
+        contentHost.frame = frame
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }

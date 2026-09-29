@@ -74,6 +74,19 @@ nonisolated enum StatusHooks {
     /// `NAME=value` words), so `claude; exec zsh` or `claude -- "prompt"` still pass it
     /// to claude. Whitespace inside the rest of the command is kept as typed.
     static func insertAfterExecutable(_ command: String, _ argument: String) -> String {
+        let end = executableEnd(command)
+        return String(command[..<end]) + " " + argument + String(command[end...])
+    }
+
+    /// The command up to and including its executable word, with any leading `NAME=value`
+    /// words (e.g. `CODEX_HOME=~/x codex`), for running a subcommand of it (DESIGN §9.7).
+    static func executablePrefix(_ command: String) -> String {
+        String(command[..<executableEnd(command)]).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Where the executable word ends: before a shell operator glued to it (e.g.
+    /// "claude;"), or the end of the command if it has none.
+    private static func executableEnd(_ command: String) -> String.Index {
         var index = command.startIndex
         func skipSpaces() { while index < command.endIndex, command[index].isWhitespace { index = command.index(after: index) } }
         func word() -> Substring {
@@ -84,11 +97,10 @@ nonisolated enum StatusHooks {
         while true {
             skipSpaces()
             let w = word()
-            if w.isEmpty { return command + " " + argument }
+            if w.isEmpty { return command.endIndex }
             if !AgentProfile.isAssignment(String(w)) {
-                // Stop the executable word at a shell operator glued to it (e.g. "claude;").
                 if let cut = w.firstIndex(where: { ";|&<>()".contains($0) }) { index = cut }
-                return String(command[..<index]) + " " + argument + String(command[index...])
+                return index
             }
         }
     }

@@ -20,7 +20,7 @@ Poppy is a native macOS utility. A small Liquid Glass "pill" floats in a screen 
 
 ### Concurrency rules
 - These are `nonisolated`:
-  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, `Harness` (§7.11), `AgentProfile` (§9.5), and `AgentStatus` / `StatusHooks` (§9.6)
+  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, `Harness` (§7.11), `AgentProfile` (§9.5), and `AgentStatus` / `StatusHooks` (§9.6), `ChildProcess`, `UsageWindow` / `UsageReport` / `UsageError` and the `ClaudeUsage` / `CodexUsage` fetchers (§9.7; the Claude fetch is `async` on the global executor, the Codex fetch runs in a `Task.detached`, and results are applied on the main actor)
   - `appLog` (§4)
   - the Carbon C handler (§11)
 - Code on the main thread that is not statically main-actor (the bodies of `NSAnimationContext` completion handlers, `Timer` block closures, `NotificationCenter` block observers with `queue: .main`, and the Carbon handler) wraps its body in `MainActor.assumeIsolated { … }`. Never capture non-Sendable parameters (raw pointers, `Notification`) inside that closure; extract Sendable values first.
@@ -45,6 +45,10 @@ Sources/poppy/
   Terminal/ShellEnvironment.swift   builds executable/args/env for the child (and the agent probe)
   Terminal/AgentCatalog.swift       AgentProfile, the agent list and the installed-CLI probe (§9.5)
   Terminal/AgentStatus.swift        AgentStatus + StatusHooks installers (§9.6)
+  Terminal/ChildProcess.swift       posix_spawn helper for short-lived helpers (the agent probe, Codex usage)
+  Usage/UsageMonitor.swift          UsageReport + UsageMonitor: which source, when to fetch, staleness (§9.7)
+  Usage/UsageSources.swift          Claude (OAuth endpoint) and Codex (app-server) fetchers (§9.7)
+  Views/UsageBar.swift              the expanded view's usage footer (§7.9) and the ring's formatting helpers
   Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper (register/unregister)
   Hotkey/HotKeyCombo.swift          key table: parse, config string, display, validity (§11.1)
   Hotkey/HotKeyManager.swift        owns the hotkey, current combo and recorder (§11)
@@ -64,7 +68,7 @@ Ownership: strong references go downward; back-references are `weak`.
   - It calls `session.attach(to: expandedView.contentHost)`.
   - `session` is `TerminalSession?`, which is `nil` before M5.
 - `PillView` and `HeaderView` have a `weak var controller: PanelController?`. On right-click they call `controller.showContextMenu(event:in:)`.
-- `PanelController` owns the `AgentCatalog` (M12, §9.5).
+- `PanelController` owns the `AgentCatalog` (M12, §9.5) and the `UsageMonitor` (M15, §9.7).
 - `TerminalSession` owns the current `PoppyTerminalView` and keeps its own `config` copy (M12).
   - It exposes `var focusView: NSView?`, which is the current terminal view. `PanelController` reads it whenever it needs a first responder.
   - Before M5, `PanelController` uses the placeholder text field instead. The placeholder is created only when `session == nil`, so from M5 on it never exists and `focusTarget` is always the terminal.
@@ -311,9 +315,10 @@ In `PillView`, ignored while `isAnimating`:
     - Centered title label: `pillTitle` (§7.11), 12 pt system font, `secondaryLabelColor`. `setTitle(_:)` changes it on an agent switch (§9.5).
     - No buttons (the collapse button was removed in M9; §6.3). `hitTest` returns the header itself for any point inside it, so the title also drags.
 - **`contentHost`** (`NSView`):
-  - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left, right and bottom. The gap below the header is 0.
+  - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left, right and bottom (above the usage footer when it's shown). The gap below the header is 0.
   - `wantsLayer = true`, `layer.cornerRadius = 10`, `layer.masksToBounds = true`, no background color.
   - Until M5 it holds the placeholder: an editable `NSTextField` filling its width at the top, with placeholder text "Type here to test focus".
+- **`UsageBar`** (M15, §9.7): a 22 pt footer along the bottom (full width, 12 pt side padding, autoresizing `[.width, .maxYMargin]`); `contentHost` then starts at 22 pt instead of 8 pt. `ExpandedView.setUsageVisible(_:)` shows or hides it and moves `contentHost`'s bottom edge (a terminal resize, so it's driven only by the harness and the Show Usage setting, never by fetch results). Contents, left to right, one group per window (short, then long): the window label (`5h`, `7d`, from the window's length), a 48×4 pt capsule meter filled to the **used** fraction (`labelColor` at 0.75 alpha, or `.systemRed` at ≥ 90 % used, over a `labelColor` 0.15 track), and text `"<left>% left · resets in <countdown>"` (11 pt, `secondaryLabelColor`, truncating tail). Countdown: `<1 h` → `"Xm"`, `<48 h` → `"Xh Ym"`, else `"Xd Yh"`; past or missing → no "resets" part. With no report yet it reads `"Usage: loading…"`; when unavailable, `"Usage unavailable"` (the reason in the tooltip). Each group's tooltip: `"<used>% of the <label> limit used, resets <local time>"`. Right-clicks show the context menu; clicks do nothing.
 
 ### 7.10 Poppy menu (context menu and menu bar)
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
@@ -321,6 +326,7 @@ In `PillView`, ignored while `isAnimating`:
   - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5). Enabled only if `session != nil`.
   - **"Pill Size ▸"** (M13): Small / Medium / Large (§7.14).
   - **"Auto-Open ▸"** (M14): "When Input Is Needed" and "When Done", then a separator and "Focus the Panel"; checkmarks from `config.autoOpenOnInput` / `autoOpenOnDone` / `autoOpenFocus`; `toggleAutoOpen(_:)` (key in `representedObject`) flips the flag and saves it with `Config.saveValue(Bool, forKey:)`. Enabled only if there's a session and `config.statusHooks` (§7.15).
+  - **"Show Usage"** (M15): checkmark from `config.showUsage`; `toggleShowUsage` flips it, saves it with `Config.saveValue`, and updates the monitor, footer and ring at once (§9.7).
   - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
   - separator
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
@@ -331,7 +337,7 @@ In `PillView`, ignored while `isAnimating`:
 
 ### 7.11 Pill contents (the harness logo, M11)
 - `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`). From M11 it is used only by the expanded header's title (§7.9).
-- **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the same first word, lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch, and again by `switchAgent` (§9.5) when the agent changes.
+- **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the command's first word after any leading `NAME=value` words (M14), lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch, and again by `switchAgent` (§9.5) when the agent changes.
 - **The pill** shows no text, only a centered `NSImageView`, 24×24 pt on the default pill (scaled with the pill size, §7.14), `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)` calls `update(harness:title:)` (also called on an agent switch, §9.5), which sets the logo, and the tooltip and accessibility label to `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
 - **Logos are black-and-white only** (the user's choice in M11: no brand colors). Each is a transparent PNG, black on alpha, used as a template image, so it tints to `labelColor` on the pill (black in light mode, white in dark) and follows the menu bar's appearance.
 - **`HarnessLogo.image(for:points:)`** loads `<name>.png` (`claude`, `codex`, `gemini`, `opencode`; `.other`, i.e. unrecognized CLIs and plain shells, uses `poppy`), sets `size` to `points`×`points`, `isTemplate = true`, `accessibilityDescription = displayName`. `HarnessLogo.poppy(points:)` loads `poppy.png` the same way (description "Poppy"). A file that can't be found logs `logo: <name>.png not found in [...]` and falls back to SF Symbol `terminal` (natural size, template).
@@ -343,6 +349,8 @@ In `PillView`, ignored while `isAnimating`:
 - **Files:** `Resources/Logos/<name>.png`, 128×128 px RGBA, rendered by `scripts/render-logos.swift` (paths found from `#filePath`, so it runs from anywhere; fails if no SVGs are found) from `Resources/Logos/src/<name>.svg`. The PNGs are committed and `bundle.sh` doesn't re-render them: re-run the script after editing any SVG. The script draws each SVG, then fills black with `.sourceIn` so every covered pixel is pure black at its original alpha.
 - **Poppy's own logo** (`src/poppy.svg`, added by the user in M11): a four-petal flower with a stem and leaf, black on transparent, 24×24 viewBox, designed to stay legible at 18 px. Its arcs already have separated flags.
 - **Sources:** the harness SVGs are the mono marks from lobehub/lobe-icons (`@lobehub/icons-static-svg`, MIT License, Copyright (c) 2023 LobeHub; the same marks platoon vendors). The full license, with a note that the marks remain their owners' trademarks, is `Resources/Logos/src/LICENSE-lobe-icons`, and `bundle.sh` ships it next to the PNGs. CoreSVG can't parse SVG arcs with packed flags (`a14 14 0 01-4 3`, "wrong number of floats"; verified in a scratchpad test), so their path data was normalized to separate the flags (`0 1`). Normalize any new or updated logo the same way before rendering.
+
+- **Usage ring** (M15, §9.7): a `CAShapeLayer` circle just inside the glass edge (inset `lineWidth / 2 + 1.5` pt; `lineWidth` 2.5 pt on the 44 pt pill, scaled with the diameter), starting at 12 o'clock and running clockwise, `strokeEnd` = the **short window's** used fraction, round caps, with **no track** (nothing drawn for the unused part, so it sits directly on the glass) and **no color**: always `labelColor` at 0.75 alpha, never red (the user's choice in M15; the footer meter keeps its red warning). Its CGColor is resolved in `viewDidChangeEffectiveAppearance` inside `performAsCurrentDrawingAppearance` from `labelColor.cgColor.copy(alpha:)`; a stored `withAlphaComponent` color kept the appearance it was first resolved in (the ring stayed white in light mode). The footer's colors are computed on each draw for the same reason. Hidden when there's no current report for the running harness. The tooltip and accessibility label get `" · <used>% of 5h used"` appended (after the status suffix). The logo tint (status) is unaffected.
 
 ### 7.12 Menu bar item (M8; icon M11)
 - `AppDelegate` creates it after the controller: `NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`.
@@ -395,11 +403,11 @@ Driven by status changes (§9.6), in `PanelController.statusChanged(_:)`, which 
 
 The directory is `~/.config/poppy/`, created with intermediate directories if missing. Both types are `nonisolated struct … : Codable, Sendable`.
 
-### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10), `command` (M12), and `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus` (M14))
+### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10), `command` (M12), `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus` (M14), and `showUsage` (M15))
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
-Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the Auto-Open menu writes these three; `statusHooks` is user-written only). The defaults file written on first launch contains these flags too.
+Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the Auto-Open menu writes these three; `statusHooks` is user-written only). `"showUsage": true` (M15, §9.7; written by the Show Usage menu item). The defaults file written on first launch contains these flags too.
 
 Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", "command": "claude --dangerously-skip-permissions" }]`, extra entries for the Agent submenu (§9.5). It's `var agents: [AgentProfile]?`; the synthesized encoder omits it when nil, so the defaults file doesn't contain it. Decoding it can't fail the whole file: if it doesn't decode (e.g. an entry without `name`), log `config.json "agents" is invalid, ignoring it` and use nil; entries whose `name` or `command` is blank after trimming are dropped.
 
@@ -563,6 +571,27 @@ Modeled on platoon's status feed and claude-popup's hooks. **`AgentStatus`** (`T
 - **Merging** (Codex, Gemini): **additive only**, platoon's rule. For each event, skip it if any entry already contains the marker; otherwise append `{"matcher": ".*", "hooks": [{"type": "command", "command": …}]}` (without `matcher` for Gemini's non-tool events). Nothing is removed or reordered (Codex's approvals are per position), and the values of all other keys are kept, but the file is re-serialized (pretty-printed, sorted keys; noisy in a dotfiles repo). If the file isn't a JSON object (including JSONC with comments), or `hooks`/an event has an unexpected shape, nothing is written (logged). Written atomically **through symlinks** (`resolvingSymlinksInPath`, for dotfile managers), keeping the file's POSIX permissions.
 - **Upgrades:** an event with any entry containing the marker counts as installed, so a future change to the command text wouldn't update existing entries. Not needed yet; a versioned marker would be the way. Idempotent (verified on a copy of a real `hooks.json`: each event gained exactly one entry, the existing ones were unchanged, and a second run added nothing).
 
+### 9.7 Usage meters (M15)
+Modeled on platoon (`usage.rs`, `codex_usage.rs`, `UsageFooter.tsx`). Shows how much of the running agent's subscription limits is left: the footer (§7.9) shows both windows, the pill ring (§7.11) the short (5-hour) one. Only Claude and Codex have a source; for Gemini, opencode and `.other` there's no footer and no ring.
+
+**Model** (`nonisolated struct`s): `UsageWindow { usedPercent: Double (0–100, clamped), resetsAt: Date?, minutes: Int? }` with `label` (`minutes` 300 → `"5h"`, 10080 → `"7d"`, other → `"<h>h"` / `"<d>d"`, nil → the slot's default: `"5h"` short, `"7d"` long); `UsageReport { short: UsageWindow?, long: UsageWindow?, fetchedAt: Date }`. A report is **stale** (due for a fetch) once any window's `resetsAt` has passed, or 15 min after `fetchedAt`. What's shown is `current(at:)`: windows whose `resetsAt` has passed are dropped (their numbers no longer apply, platoon's rule) and the rest kept; nil after 15 min or when no window is left. A successful fetch with nothing current shows "unavailable" with the reason "no current usage reported" (review fix: a window reported as already reset must not hide the other one or read as "loading" forever).
+
+**Claude** (`ClaudeUsage.fetch() async throws -> UsageReport`, off the main actor):
+- `fetch()` is `@concurrent` (the token read blocks, so never on the main actor).
+- Token: `/usr/bin/security find-generic-password -s "Claude Code-credentials" -w` (the Keychain item Claude Code maintains; run as a subprocess with a 60 s timeout, time to answer an access prompt; stderr discarded). Exit 44 (item not found) falls back to `~/.claude/.credentials.json`; any other failure (denied, cancelled, timed out) is `keychainDenied`, which is **not retried** (`nextAllowed = .distantFuture`) until Show Usage is turned off and on or Poppy relaunches, so the prompt never keeps coming back. JSON `claudeAiOauth.accessToken` (or top-level `accessToken`). Read on every fetch (Claude rotates it), never stored or logged. If `expiresAt` (ms) has passed, fail with "token expired" without calling the network (Claude refreshes it the next time it runs). The first read may make macOS ask to allow Keychain access.
+- `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-code/2.1.0` (the endpoint rate-limits unknown agents harder; platoon does the same), 15 s timeout, ephemeral `URLSession` (no cookies/cache). Undocumented endpoint: every field is optional, and a changed shape degrades to "unavailable".
+- `five_hour` → short, `seven_day` → long: `utilization` → `usedPercent`, `resets_at` (ISO 8601, with fractional seconds) → `resetsAt`, `minutes` 300 / 10080. HTTP 429 → `rateLimited`; other non-200 → failure with the code.
+
+**Codex** (`CodexUsage.fetch(command:)`): runs `<prefix> app-server` through the login shell (`ShellEnvironment.probeSpec`, so PATH/nvm match the agent), where `<prefix>` is the running command up to and including its executable word (`StatusHooks.executablePrefix`, shared with `insertAfterExecutable`; keeps `CODEX_HOME=…` assignments). Via `ChildProcess.run` (new session, 10 s timeout, then SIGKILL to the group): writes three JSON-RPC lines to stdin — `initialize` (id 0, clientInfo `poppy`), `initialized`, `account/rateLimits/read` (id 1) — and stops (killing the group) as soon as a stdout line parses as JSON with `"id": 1`. `result.rateLimits.primary` → short, `.secondary` → long (`usedPercent`, `resetsAt` unix seconds, `windowDurationMins`); an `error` (e.g. API-key login: "chatgpt authentication required") → failure with its message.
+
+**`ChildProcess.run(_:label:input:timeout:until:)`** (`nonisolated`; M15, extracted from the M12 probe): posix_spawn with `SETSID | CLOEXEC_DEFAULT`; its pipes are `FD_CLOEXEC` in Poppy (so an agent started meanwhile doesn't inherit them); stdin `/dev/null` or a pipe holding `input` (`F_SETNOSIGPIPE`, kept open until the end), stdout a pipe, stderr `/dev/null`; polls stdout every 100 ms; returns the output when `until(output)` is true (then closes stdin, gives the process up to 1 s to exit on its own, e.g. so Codex can finish writing its files, then SIGKILLs the group) or when the process exits (status included); nil on spawn failure or timeout (logged with `label`). `waitpid` is retried on EINTR. `AgentCatalog.runProbe` now uses it (same behavior as §9.5).
+
+**`UsageMonitor`** (main actor, owned by `PanelController`):
+- `harness` (set at init and by `switchAgent`), `enabled` (`config.showUsage`), `onChange: (UsageReport?, String?) -> Void` (report to show, or nil with a reason: nil reason = loading), `supports(harness)`.
+- Per-source cache, keyed by harness and `executablePrefix(command)` (so Codex profiles with different `CODEX_HOME`s don't share numbers): last good report, `nextAllowed`, `inFlight`, `backoff`, last failure reason. Switching back to a harness shows its cached report at once if not stale.
+- `refresh(trigger:)`: nothing if disabled, unsupported, in flight, or before `nextAllowed`. `.poll` (a 60 s `Timer` in `.common` modes) fetches only if there's no report, it's stale, or it's ≥ 5 min old; `.event` (expand, agent switch, a turn ending = status `.done`, turning Show Usage on) fetches regardless of age. After a success `nextAllowed` = now + 2 min (Claude; the endpoint is rate-limited) / 1 min (Codex); after a 429, now + backoff (10 min, doubling to 30 min, reset by a success); after `keychainDenied`, never (until Show Usage is toggled); after another failure, now + 5 min. Failures keep showing the last report until it goes stale; with none, the reason is shown.
+- Every timer tick also re-publishes (so countdowns and staleness update each minute). Results for a harness that's no longer current update the cache only. Logs `usage: <harness> 5h 12% 7d 47%` or `usage: <harness> failed: <reason>` (never the token).
+
 ## 10. Liquid Glass (`GlassBackgroundView`)
 
 `GlassBackgroundView: NSView` has `var cornerRadius: CGFloat` (its `didSet` forwards the value to the backing view) and `let contentView = NSView()`. `PillView` and `ExpandedView` are added to `contentView`.
@@ -707,6 +736,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M12 | `Terminal/AgentCatalog.swift`; Agent submenu with installed check, `TerminalSession.switchCommand(to:)`, `PillView.update`, `HeaderView.setTitle`, `Config.agents` and `saveValue` (§9.5, §7.10, §8.1) | — |
 | M13 | Expanded panel resizable by edges/corners, terminal reflows while dragging (coalesced, ~20/s) and on release (§7.13); pill size presets Small/Medium/Large in the menu (§7.14); `PanelState.pillDiameter`/`expandedSize` (§8.2) | — |
 | M14 | `Terminal/AgentStatus.swift`; status file + polling in `TerminalSession`; hooks for Claude (`--settings`), Codex, Gemini, opencode; pill tint; Auto-Open menu and `GlassPanel` key guard; config flags (§9.6, §7.15, §8.1) | — |
+| M15 | `Usage/*`, `Terminal/ChildProcess.swift` (probe refactored onto it), `Views/UsageBar.swift`; usage footer in the expanded view, usage ring on the pill, Show Usage menu item, `showUsage` flag (§9.7, §7.9, §7.10, §7.11, §8.1) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -733,3 +763,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 14. Whether the installed-CLI probe (an interactive login shell without a tty) finishes quickly and finds aliases, including from the Finder-launched app; that under `swift run` it never touches the launching terminal; and whether switching agents cleanly ends the old one and starts the new one: M12.
 15. Whether system edge/corner resizing works on the non-activating titled panel (cursors, all edges, over fullscreen apps), whether the terminal reflows smoothly while dragging without garbling the agent's display, and whether the smaller and larger pills keep a good glass rim: M13.
 16. Whether each agent's hooks fire as mapped (Claude via `--settings`, Codex after approving the new hooks, Gemini, opencode's `chat.message`/`permission.ask` hook names), whether Codex's PostToolUse and Gemini's AfterTool report working after an approval, whether Codex/Gemini need hooks switched on in their settings, whether opencode's plugin directory is `plugins/` (not the older `plugin/`), and whether auto-open steals focus acceptably (key guard) and collapses back after answering: M14.
+17. Whether the Keychain read via `/usr/bin/security` works without a prompt (or after one "Always Allow") in both the unbundled and bundled app; whether the undocumented Claude usage endpoint keeps answering at this cadence without 429s; whether `codex app-server` answers through the login shell within the timeout; whether the ring reads well on the glass at all three pill sizes: M15.

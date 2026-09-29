@@ -23,6 +23,8 @@ final class PanelController: NSObject {
     let panel: GlassPanel
     private var config: Config
     private let agents: AgentCatalog
+    /// The running agent's subscription usage (DESIGN §9.7).
+    private let usage: UsageMonitor
     /// The profiles in the menu as last built; menu items refer to them by `tag`.
     private var menuAgents: [AgentProfile] = []
     private let session: TerminalSession?
@@ -64,6 +66,7 @@ final class PanelController: NSObject {
     init(config: Config, session: TerminalSession?) {
         self.config = config
         agents = AgentCatalog(launchCommand: config.command)
+        usage = UsageMonitor(command: config.command, enabled: config.showUsage)
         self.session = session
         let saved = PanelState.load()
         if let diameter = saved.pillDiameter.map({ CGFloat($0) }),
@@ -92,6 +95,7 @@ final class PanelController: NSObject {
 
         pillView.controller = self
         expandedView.header.controller = self
+        expandedView.usageBar.controller = self
         glass.contentView.addSubview(pillView)
         glass.contentView.addSubview(expandedView)
 
@@ -134,6 +138,15 @@ final class PanelController: NSObject {
         panel.orderFrontRegardless()
         panel.refreshShadow()
         agents.refreshIfNeeded(agents.profiles(for: config))
+        usage.onChange = { [weak self] report, reason in self?.usageChanged(report, reason: reason) }
+        usage.start()
+    }
+
+    /// Footer (both windows) and pill ring (the 5-hour one), DESIGN §9.7.
+    private func usageChanged(_ report: UsageReport?, reason: String?) {
+        expandedView.setUsageVisible(usage.isActive)
+        expandedView.usageBar.show(report, reason: reason)
+        pillView.setUsage(report?.short)
     }
 
     private var focusTarget: NSView? { session?.focusView ?? placeholderField }
@@ -160,6 +173,7 @@ final class PanelController: NSObject {
         isAnimating = true
         state = .expanded
         autoOpenedFor = nil
+        usage.refresh(.event)
 
         pillFrame = panel.frame
         anchor = Self.anchor(for: pillFrame)
@@ -261,6 +275,7 @@ final class PanelController: NSObject {
         case .waiting:
             if config.autoOpenOnInput { autoOpen(for: .waiting) } else { appLog("auto-open: off for input") }
         case .done:
+            usage.refresh(.event)  // a turn just used some
             if state == .expanded, panel.isKeyWindow {
                 session?.markDoneSeen()  // the user is looking at it
             } else if config.autoOpenOnDone {
@@ -611,6 +626,11 @@ final class PanelController: NSObject {
         autoOpenItem.submenu = autoOpenMenu
         menu.addItem(autoOpenItem)
 
+        let usageItem = NSMenuItem(title: "Show Usage", action: #selector(toggleShowUsage), keyEquivalent: "")
+        usageItem.target = self
+        usageItem.state = config.showUsage ? .on : .off
+        menu.addItem(usageItem)
+
         let setHotKey = NSMenuItem(title: setTitle, action: #selector(setHotKey), keyEquivalent: "")
         setHotKey.target = self
         setHotKey.isEnabled = hotKeys?.canRecord == true
@@ -665,6 +685,7 @@ final class PanelController: NSObject {
         session.switchCommand(to: profile.command)
         pillView.update(harness: Harness(command: config.command), title: config.pillTitle)
         expandedView.header.setTitle(config.pillTitle)
+        usage.setCommand(profile.command)
         _ = Config.saveValue(profile.command, forKey: "command")
     }
 
@@ -687,6 +708,15 @@ final class PanelController: NSObject {
         appLog("auto-open: \(key) = \(on)")
         if !Config.saveValue(on, forKey: key) {
             appLog("auto-open: \(key) not saved; it applies until Poppy quits")
+        }
+    }
+
+    @objc private func toggleShowUsage() {
+        config.showUsage.toggle()
+        appLog("usage: showUsage = \(config.showUsage)")
+        usage.setEnabled(config.showUsage)
+        if !Config.saveValue(config.showUsage, forKey: "showUsage") {
+            appLog("usage: showUsage not saved; it applies until Poppy quits")
         }
     }
 
