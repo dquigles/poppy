@@ -14,12 +14,34 @@ final class TerminalSession {
     /// Called after `restart()` swaps in a new view, so focus can follow it.
     var onViewReplaced: (() -> Void)?
 
+    /// Reported by the agent's hooks through `statusFile` (DESIGN §9.6).
+    private(set) var status = AgentStatus.idle
+    var onStatusChange: ((AgentStatus) -> Void)?
+    private var statusFile: URL?
+    private var statusGeneration = 0
+    private var statusTimer: Timer?
+    /// Modification date of the last report acted on; a hook rewriting the same word is
+    /// still a new report (e.g. "done" at the end of every turn).
+    private var lastStatusDate: Date?
+    static let statusPollInterval: TimeInterval = 0.25
+    static let statusDirectory = ConfigPaths.directory.appendingPathComponent("run")
+
     var focusView: NSView? { currentView }
 
     init(config: Config) {
         self.config = config
-        spec = ShellEnvironment.launchSpec(for: config)
+        spec = Self.launchSpec(for: config)
         logSpec()
+        Self.removeStaleStatusFiles()
+    }
+
+    /// The launch spec, with the command readied for status hooks (DESIGN §9.6).
+    private static func launchSpec(for config: Config) -> LaunchSpec {
+        var hooked = config
+        if config.statusHooks {
+            hooked.command = StatusHooks.prepare(command: config.command)
+        }
+        return ShellEnvironment.launchSpec(for: hooked)
     }
 
     private func logSpec() {
@@ -30,9 +52,7 @@ final class TerminalSession {
     /// No conversation is carried over.
     func switchCommand(to command: String) {
         config.command = command
-        spec = ShellEnvironment.launchSpec(for: config)
-        logSpec()
-        restart()
+        restart()  // recomputes the spec
     }
 
     /// Adds the terminal to `host` (which has a fixed size) and starts the agent.
@@ -43,6 +63,8 @@ final class TerminalSession {
 
     func restart() {
         appLog("restarting agent")
+        spec = Self.launchSpec(for: config)  // re-readies the hooks (e.g. a deleted Claude hooks file)
+        logSpec()
         terminateChild(reap: true)
         currentView?.removeFromSuperview()
         currentView = nil
@@ -53,6 +75,7 @@ final class TerminalSession {
     /// SIGHUP the shell's process group, else the shell itself. With `-i` the agent may be
     /// in its own job group; it still gets SIGHUP when the shell (the pty's session leader) exits.
     func terminateChild(reap: Bool = false) {
+        removeStatusFile()
         guard let process = currentView?.process, process.running else { return }
         let pid = process.shellPid
         guard pid > 0 else { return }
@@ -99,9 +122,86 @@ final class TerminalSession {
         host.addSubview(view)
         currentView = view
         exited = false
-        view.startProcess(executable: spec.executable, args: spec.args, environment: spec.environment,
+        // No status file or variable when status hooks are off (DESIGN §9.6).
+        let statusURL = config.statusHooks ? newStatusFile() : nil
+        let environment = spec.environment + (statusURL.map { ["POPPY_STATUS_FILE=\($0.path)"] } ?? [])
+        view.startProcess(executable: spec.executable, args: spec.args, environment: environment,
                           execName: nil, currentDirectory: spec.currentDirectory)
         appLog("agent started (pid \(view.process.shellPid))")
+    }
+}
+
+// MARK: - Status (DESIGN §9.6)
+
+extension TerminalSession {
+    /// A fresh, empty status file for a new agent start (so an old agent that's still
+    /// dying can't report into it), and polling starts. Nil if it can't be created.
+    fileprivate func newStatusFile() -> URL? {
+        removeStatusFile()
+        setStatus(.idle)  // even if the new file can't be created
+        statusGeneration += 1
+        let url = Self.statusDirectory.appendingPathComponent(
+            "status-\(ProcessInfo.processInfo.processIdentifier)-\(statusGeneration)")
+        do {
+            try FileManager.default.createDirectory(at: Self.statusDirectory, withIntermediateDirectories: true)
+            try Data().write(to: url)
+        } catch {
+            appLog("status: could not create \(url.path): \(error)")
+            return nil
+        }
+        statusFile = url
+        lastStatusDate = nil
+        let timer = Timer(timeInterval: Self.statusPollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollStatus() }
+        }
+        RunLoop.main.add(timer, forMode: .common)  // also during menus and live resize
+        statusTimer = timer
+        return url
+    }
+
+    fileprivate func removeStatusFile() {
+        statusTimer?.invalidate()
+        statusTimer = nil
+        if let statusFile { try? FileManager.default.removeItem(at: statusFile) }
+        statusFile = nil
+    }
+
+    /// Acts on a report only when the file changed (by modification date), so a status
+    /// Poppy changed locally (markDoneSeen) isn't overwritten by an old report. The file is
+    /// never truncated here, so no report can be lost between reading and clearing.
+    private func pollStatus() {
+        guard let statusFile,
+              let date = (try? FileManager.default.attributesOfItem(atPath: statusFile.path))?[.modificationDate] as? Date,
+              date != lastStatusDate,
+              let data = try? Data(contentsOf: statusFile) else { return }
+        let word = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let reported = AgentStatus(rawValue: word) else { return }  // empty or mid-write
+        lastStatusDate = date
+        setStatus(reported)
+    }
+
+    fileprivate func setStatus(_ new: AgentStatus) {
+        guard new != status else { return }
+        appLog("status: \(status.rawValue) -> \(new.rawValue)")
+        status = new
+        onStatusChange?(new)
+    }
+
+    /// The user has seen the panel: "done" goes back to idle.
+    func markDoneSeen() {
+        if status == .done { setStatus(.idle) }
+    }
+
+    /// Removes status files left by Poppy processes that are no longer running.
+    fileprivate static func removeStaleStatusFiles() {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: statusDirectory.path) else { return }
+        for name in names where name.hasPrefix("status-") {
+            let parts = name.split(separator: "-")
+            guard parts.count == 3, let pid = pid_t(parts[1]) else { continue }
+            if kill(pid, 0) != 0 && errno == ESRCH {
+                try? FileManager.default.removeItem(at: statusDirectory.appendingPathComponent(name))
+            }
+        }
     }
 }
 
@@ -118,6 +218,11 @@ extension TerminalSession: @preconcurrency LocalProcessTerminalViewDelegate {
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         guard source === currentView, let view = currentView else { return }
         exited = true
+        // Stop polling: a report written just before exit mustn't change the status (or
+        // auto-open) for a dead agent. The file stays until the next start or quit.
+        statusTimer?.invalidate()
+        statusTimer = nil
+        setStatus(.idle)
         let desc = Self.describe(waitStatus: exitCode)
         appLog("agent exited (\(desc))")
         view.feed(text: "\r\n[Poppy] process exited (\(desc)). Press Enter to restart.\r\n")

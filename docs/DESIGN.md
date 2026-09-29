@@ -20,10 +20,10 @@ Poppy is a native macOS utility. A small Liquid Glass "pill" floats in a screen 
 
 ### Concurrency rules
 - These are `nonisolated`:
-  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, `Harness` (§7.11), and `AgentProfile` (§9.5)
+  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, `Harness` (§7.11), `AgentProfile` (§9.5), and `AgentStatus` / `StatusHooks` (§9.6)
   - `appLog` (§4)
   - the Carbon C handler (§11)
-- Code on the main thread that is not statically main-actor (the bodies of `NSAnimationContext` completion handlers, `NotificationCenter` block observers with `queue: .main`, and the Carbon handler) wraps its body in `MainActor.assumeIsolated { … }`. Never capture non-Sendable parameters (raw pointers, `Notification`) inside that closure; extract Sendable values first.
+- Code on the main thread that is not statically main-actor (the bodies of `NSAnimationContext` completion handlers, `Timer` block closures, `NotificationCenter` block observers with `queue: .main`, and the Carbon handler) wraps its body in `MainActor.assumeIsolated { … }`. Never capture non-Sendable parameters (raw pointers, `Notification`) inside that closure; extract Sendable values first.
 - SwiftTerm has no actor annotations. Its callbacks arrive on `DispatchQueue.main` (the `LocalProcess` default). Import it with `@preconcurrency import SwiftTerm`, and declare the conformance as `extension TerminalSession: @preconcurrency LocalProcessTerminalViewDelegate`.
 
 ## 3. File layout and ownership
@@ -44,6 +44,7 @@ Sources/poppy/
   Terminal/TerminalSession.swift    TerminalSession + PoppyTerminalView
   Terminal/ShellEnvironment.swift   builds executable/args/env for the child (and the agent probe)
   Terminal/AgentCatalog.swift       AgentProfile, the agent list and the installed-CLI probe (§9.5)
+  Terminal/AgentStatus.swift        AgentStatus + StatusHooks installers (§9.6)
   Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper (register/unregister)
   Hotkey/HotKeyCombo.swift          key table: parse, config string, display, validity (§11.1)
   Hotkey/HotKeyManager.swift        owns the hotkey, current combo and recorder (§11)
@@ -126,6 +127,7 @@ Overrides:
 - `var allowsKey = false` (stored). `canBecomeKey` returns `allowsKey`.
 - `canBecomeMain` returns `false`.
 - `performKeyEquivalent(with:)` (§6.2).
+- `sendEvent(_:)` and `ignoreKeys(for:)`: the auto-open key guard (M14, §7.15).
 
 The Poppy panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). (The hotkey recorder's own `GlassPanel` is covered by §11.2.)
 
@@ -153,7 +155,7 @@ Right-click menus still work.
 - **Collapsed:** `allowsKey = false`. The pill never becomes key. `PillView.acceptsFirstMouse(for:)` returns `true`.
 - **Expand** (§7.6 sequencing):
   1. Set `allowsKey = true` at the start.
-  2. When the frame animation finishes, call `panel.makeKeyAndOrderFront(nil)`, then `panel.makeFirstResponder(focusTarget)`.
+  2. When the frame animation finishes, call `panel.makeFirstResponder(focusTarget)`, then `panel.makeKeyAndOrderFront(nil)` (or only `orderFrontRegardless()` for an unfocused auto-open, §7.15).
      - `focusTarget` is `session?.focusView ?? placeholderField`.
 - **Collapse:** before the animation starts:
   1. `panel.makeFirstResponder(nil)`
@@ -169,7 +171,7 @@ Right-click menus still work.
 ### 6.2 Key equivalents
 The app is never active and has no main menu, so menu key equivalents never fire.
 
-`GlassPanel.performKeyEquivalent(with:)` handles only events where both hold:
+`GlassPanel.performKeyEquivalent(with:)` first returns true for anything while the auto-open key guard is active (§7.15). Otherwise it handles only events where both hold:
 - `event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command]`
 - `event.charactersIgnoringModifiers?.lowercased()` is one of:
 
@@ -185,7 +187,7 @@ It returns the result of `sendAction`. Everything else, including Cmd-Q and Cmd-
 There is no collapse button; the panel collapses on a click outside it, or with the hotkey while it is key (§11). (M9 briefly had a Collapse menu item; the user removed it in M10.)
 - `PanelController.clickOutsideMonitor: Any?` holds an `NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseDown, .otherMouseDown])` monitor. The handler (called on the main thread) runs `MainActor.assumeIsolated { self?.clickedOutside() }`.
 - A global monitor only sees events delivered to **other** apps, so clicks inside the panel, on its right-click menu, or on Poppy's own menu bar item (§7.12) never collapse it. Mouse monitors need no Accessibility permission.
-- **Installed** in expand's final fade completion, just before `finishAnimation()`. Clicks during the expand animation are ignored.
+- **Installed** in expand's final fade completion, just before `finishAnimation()`, if the panel is key; otherwise when it first becomes key (M14, §7.15). Clicks during the expand animation are ignored.
 - **Removed** at the start of `collapse()`, right after `state = .collapsed`, whatever triggered the collapse.
 - `clickedOutside()`: if `state == .expanded && !isAnimating` and `!NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)`, call `collapse()`.
 - Left clicks count on **mouse-up**, and not when released over the panel: dragging a file from Finder into the terminal starts with a mouse-down in Finder, and must not collapse the panel before the drop.
@@ -272,7 +274,7 @@ The expanded frame keeps that corner of the pill fixed (bottom-right means `maxX
    1. `panel.setResizable(true)` and set `contentMinSize` (§7.13); `invalidateShadow()`.
    2. Focus (§6.1).
    3. Fade `ExpandedView` to 1.
-   4. In the fade's completion, `isAnimating = false`.
+   4. In the fade's completion: install the click-outside monitor if key (§6.3, §7.15), `isAnimating = false` (then retry a pending auto-open), and settle a waiting auto-open whose status moved on (§7.15).
 
 **Collapse:**
 1. Return if `panel.inLiveResize` (§7.13). `isAnimating = true`; `panel.setResizable(false)`.
@@ -318,6 +320,7 @@ In `PillView`, ignored while `isAnimating`:
 - It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
   - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5). Enabled only if `session != nil`.
   - **"Pill Size ▸"** (M13): Small / Medium / Large (§7.14).
+  - **"Auto-Open ▸"** (M14): "When Input Is Needed" and "When Done", then a separator and "Focus the Panel"; checkmarks from `config.autoOpenOnInput` / `autoOpenOnDone` / `autoOpenFocus`; `toggleAutoOpen(_:)` (key in `representedObject`) flips the flag and saves it with `Config.saveValue(Bool, forKey:)`. Enabled only if there's a session and `config.statusHooks` (§7.15).
   - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
   - separator
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
@@ -343,7 +346,7 @@ In `PillView`, ignored while `isAnimating`:
 
 ### 7.12 Menu bar item (M8; icon M11)
 - `AppDelegate` creates it after the controller: `NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`.
-- `button.image` = `HarnessLogo.poppy(points: 18)` (M11; §7.11): Poppy's own logo, whatever the harness, so the menu bar item is always recognizably Poppy. It's a template, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`.
+- `button.image` = `HarnessLogo.poppy(points: 18)` (M11; §7.11): Poppy's own logo, whatever the harness, so the menu bar item is always recognizably Poppy. It's a template, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`. It never shows agent status (only the pill does, §7.15).
 - If the image has zero size, `button.title = "P"` and a log line, so the item is never invisible.
 - `statusItem.menu = controller.makeMenu()` (repopulated on each open, §7.10). Clicking the icon shows the menu; no custom click handling.
 - `appLog("status item created")`.
@@ -371,20 +374,39 @@ In `PillView`, ignored while `isAnimating`:
   - Expanded: nothing moves; the next collapse uses the new size (`pillFrame(fromExpanded:)` and the collapse completion's corner radius).
   - Save state.
 
+### 7.15 Auto-open (M14)
+Driven by status changes (§9.6), in `PanelController.statusChanged(_:)`, which also calls `PillView.setStatus` (logo tint, plus " (working)" / " (needs input)" / " (done)" in the tooltip and accessibility label, so status isn't conveyed by color alone). Only the pill shows status: the menu bar icon never changes color (the user's choice in M14).
+- **Arming:** a `.waiting` auto-open collapses only on the **first** status after it, and only if that is `working` (the user answered). Any other status (e.g. a denied prompt ending the turn with `done`) clears `autoOpenedFor`, so a later prompt never collapses the panel. Any status other than the pending one also clears `pendingAutoOpen`.
+- **working:** if that first status after a waiting open, expanded and not animating, `collapse()`: focus goes back to the app underneath (like claude-popup's detach hook). Not after a `.done` auto-open, where the user is typing the next prompt in the panel.
+- **waiting:** if `config.autoOpenOnInput`, `autoOpen(for: .waiting)`.
+- **done:** if expanded and key, `markDoneSeen()`; else if `config.autoOpenOnDone`, `autoOpen(for: .done)`.
+- **`autoOpen(for:)`**: while animating, in live resize, or with a mouse button down (`NSEvent.pressedMouseButtons != 0`; a pill drag would keep moving the now-expanded window and save its frame as the pill's), it logs `waiting`, stores `pendingAutoOpen = reason` and returns; `retryPendingAutoOpen()` runs it again from `finishAnimation()`, the end of a live resize, or (mouse down) a 0.25 s re-check, if the session's status still equals the reason. While the hotkey recorder is open (`hotKeys.isRecording`; taking key would close it and lose the recording) it's skipped (logged), not retried.
+  - Collapsed: `expand(focus: config.autoOpenFocus)`, then `autoOpenedFor = reason`. In expand's frame completion, right after `makeKeyAndOrderFront`, if `autoOpenedFor != nil`, `panel.ignoreKeys(for: 0.4)`, so the guard starts when the panel actually takes the keyboard. In expand's fade completion, if `autoOpenedFor == .waiting` and the status has already moved on: clear it, and `collapse()` if it's `working` (the user answered during the animation).
+  - Expanded but not key: with `autoOpenFocus`, `ignoreKeys(for: 0.4)`, `makeKeyAndOrderFront`, first responder = `focusTarget`; without it, only `orderFrontRegardless()`. `autoOpenedFor` is unchanged.
+  - Expanded and key: nothing.
+- **`autoOpenedFor`** is cleared at the start of every `expand()` and `collapse()`, so manual opens never auto-collapse.
+- **Key guard:** `GlassPanel.ignoreKeys(for:)` sets `ignoreKeysUntil` and `dropRepeats`. While `ignoreKeysUntil` is in the future, `sendEvent` drops `keyDown` events and `performKeyEquivalent` returns true (so ⌘ shortcuts such as ⌘V are swallowed too). After it, `keyDown` auto-repeats (`isARepeat`) are still dropped until a fresh key press or any key-up (a Return held from the previous app would otherwise repeat into the prompt and confirm it). It protects against typing meant for the previous app landing in the agent, e.g. answering a permission prompt with a stray keystroke or paste.
+- **"Focus the Panel" off** (`config.autoOpenFocus = false`; the user asked for this in M14): `expand(focus: false)` sets the first responder but calls `orderFrontRegardless()` instead of `makeKeyAndOrderFront`, so the panel appears while typing keeps going to the user's app (no key guard needed). Clicking into the panel, or the hotkey (§11, "expanded and not key"), focuses it.
+  - The click-outside monitor (§6.3) is installed in expand's fade completion only if the panel is key; otherwise when it first becomes key (`panelDidBecomeKey`, if expanded and not animating; installing is idempotent). Without this, the user's next click in their own app would collapse the unfocused panel at once. So an unfocused auto-open stays until the user clicks in and then out, presses the hotkey, or (after a `.waiting` open) the agent is working again.
+- **"Done" seen:** `NSWindow.didBecomeKeyNotification` for the panel calls `session.markDoneSeen()` (and installs the click-outside monitor if expanded and not animating), however it became key (expand, the hotkey, an auto-open, a click into it).
+- **Logging** (added while debugging the first M14 test, where the option simply wasn't on): `auto-open: <key> = <bool>` on a toggle (and `not saved; it applies until Poppy quits` if saving fails); `auto-open: off for input` / `off for done` when a status arrives with the option off; `auto-open: expanding` / `focusing` / `already focused`, or `skipped (…)`.
+
 ## 8. Configuration and state
 
 The directory is `~/.config/poppy/`, created with intermediate directories if missing. Both types are `nonisolated struct … : Codable, Sendable`.
 
-### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10) and `command` (M12))
+### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10), `command` (M12), and `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus` (M14))
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
+Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the Auto-Open menu writes these three; `statusHooks` is user-written only). The defaults file written on first launch contains these flags too.
+
 Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", "command": "claude --dangerously-skip-permissions" }]`, extra entries for the Agent submenu (§9.5). It's `var agents: [AgentProfile]?`; the synthesized encoder omits it when nil, so the defaults file doesn't contain it. Decoding it can't fail the whole file: if it doesn't decode (e.g. an entry without `name`), log `config.json "agents" is invalid, ignoring it` and use nil; entries whose `name` or `command` is blank after trimming are dropped.
 
 **Decoding**
 - A hand-written `init(from:)` uses `decodeIfPresent` for each key, falling back to the defaults above. Unknown keys are ignored.
 
-**Saving one key** (`static func saveValue(_ value: String, forKey key: String) -> Bool`; `saveHotkey(_:)` (M10) calls it with `"hotkey"`, and the agent switch (M12, §9.5) with `"command"`)
+**Saving one key** (`static func saveValue(_ value: Any, forKey key: String) -> Bool`, any JSON value; `saveHotkey(_:)` (M10) calls it with `"hotkey"`, the agent switch (M12, §9.5) with `"command"`, and `toggleAutoOpen` (M14) with the autoOpen flags; a value that isn't valid JSON is refused with a log line, never an exception)
 - Read config.json with `JSONSerialization` as a `[String: Any]`, set only `key`, and write it back (pretty-printed, sorted keys, unescaped slashes, atomic). Every other key and value, including unknown keys, is kept as written; the `POPPY_COMMAND` override is never written.
 - The live copies of the config are `PanelController.config` (its `command` changes on an agent switch, §9.5) and `TerminalSession`'s own `config`. `AppDelegate.config` is not updated after launch, and nothing reads it after launch.
 - Logs `saved <key> <value> to <path>`, or the failure.
@@ -445,7 +467,7 @@ Callbacks arrive on the main queue.
 
 Each callback returns early if `source !== currentView`.
 
-**`init(config: Config)`** keeps its own copy of `config`, computes the launch spec (executable, args, env, cwd; §9.2) and stores it; `restart()` reuses it, and `switchCommand(to:)` (§9.5) recomputes it.
+**`init(config: Config)`** keeps its own copy of `config`, computes the launch spec (executable, args, env, cwd; §9.2) and stores it; `restart()` recomputes it (re-readying the status hooks, §9.6), so `switchCommand(to:)` (§9.5) only sets the command and restarts.
 
 **`attach(to host: NSView)`**
 - Stores `host` (weak).
@@ -474,11 +496,12 @@ SwiftTerm routes Command-key presses through `interpretKeyEvents` and ignores th
   - Always set `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=Poppy`, and `SHELL=<executable>`.
   - Set `LANG=en_US.UTF-8` only if `LANG` is unset or empty.
   - Set `HOME` (`NSHomeDirectory()`), `USER` and `LOGNAME` (`NSUserName()`) each only if unset or empty.
+  - `POPPY_STATUS_FILE` is added per start by `TerminalSession` (§9.6), not here.
   - Remove `POPPY_COMMAND`, `TERM_PROGRAM_VERSION`, `TERM_SESSION_ID`, `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` (the launching terminal's identity, and a parent Claude Code session when started via `swift run` from one).
 
 ### 9.3 Exit and restart
 - **`processTerminated`:**
-  - Set `exited = true`.
+  - Set `exited = true`; stop status polling and set `idle` (§9.6).
   - Feed this into the terminal: `currentView.feed(text: "\r\n[Poppy] process exited (\(desc)). Press Enter to restart.\r\n")`, where `desc` is `code N` or `signal N`. SwiftTerm passes the **raw `waitpid` status** as `exitCode` (checked in v1.20.0: exit 3 arrives as 768), so decode it: `status & 0x7f == 0` means exited with code `(status >> 8) & 0xff`, otherwise it was killed by signal `status & 0x7f`. A nil `exitCode` is reported as `signal`.
 - **`PoppyTerminalView.send(source:data:)`** (the outgoing path: keystrokes and terminal-generated replies):
   - If `session?.exited == true`: drop the data. If it contains byte 13, defer with `DispatchQueue.main.async` (`restart()` removes this very view, which is still on the stack in `keyDown`), and inside the block restart only if `session.exited` is still true and `session.focusView === self` (so repeated Enters can't kill the fresh agent).
@@ -494,7 +517,7 @@ SwiftTerm routes Command-key presses through `interpretKeyEvents` and ignores th
 1. `kill(-shellPid, SIGHUP)`. The shell leads its own group after `forkpty`; with `-i` the agent may be in a separate job group, but it still gets SIGHUP when the shell (the pty's session leader) exits.
 2. Only if that returns −1: `kill(shellPid, SIGHUP)`.
 
-It's called from `restart()` and `applicationWillTerminate`. In `restart()` only, after signalling, reap the old child on a global queue: poll `waitpid(pid, &st, WNOHANG)` every 50 ms for up to 1 s (stop on any non-zero result, including -1/ECHILD if SwiftTerm already reaped it); if it's still alive, `kill(-pid, SIGKILL)`, `kill(pid, SIGKILL)`, then a blocking `waitpid`.
+It's called from `restart()` and `applicationWillTerminate`, and first removes the status file (§9.6). In `restart()` only, after signalling, reap the old child on a global queue: poll `waitpid(pid, &st, WNOHANG)` every 50 ms for up to 1 s (stop on any non-zero result, including -1/ECHILD if SwiftTerm already reaped it); if it's still alive, `kill(-pid, SIGKILL)`, `kill(pid, SIGKILL)`, then a blocking `waitpid`.
 
 ### 9.5 Switching agents (M12)
 Chosen from the Poppy menu's **Agent ▸** submenu (§7.10). The conversation is **not** carried over: the old agent is ended and the new one starts fresh (carrying context over may come later).
@@ -520,6 +543,26 @@ Chosen from the Poppy menu's **Agent ▸** submenu (§7.10). The conversation is
 4. `pillView.update(harness:title:)` (new logo, tooltip and accessibility label) and `expandedView.header.setTitle(config.pillTitle)`.
 5. `Config.saveValue(profile.command, forKey: "command")`, so the next launch starts it. (A `POPPY_COMMAND` env var still overrides it at launch.)
 
+### 9.6 Agent status hooks (M14)
+Modeled on platoon's status feed and claude-popup's hooks. **`AgentStatus`** (`Terminal/AgentStatus.swift`): `idle`, `working`, `waiting` (blocked, needs the user), `done` (finished a turn). `tint` (pill logo only): nil (normal), `.systemBlue`, `.systemOrange`, `.systemGreen`.
+
+**Channel.** Each agent start gets a fresh file `~/.config/poppy/run/status-<poppy pid>-<generation>` (created empty), passed to the child as `POPPY_STATUS_FILE` (appended to the launch environment in `startNewView`). A hook writes one word into it. The file is new per start, so an old agent that's still dying can't report into the new one. `terminateChild` removes it; at launch, `status-*` files whose Poppy pid is no longer running are deleted.
+- **Polling** (`TerminalSession`): a 0.25 s `Timer` added to the main run loop in `.common` modes (so it keeps running during menus and live resize). It acts only when the file's modification date differs from the last one acted on (a hook rewriting the same word is still a new report), reads the word, ignores anything that isn't a status (empty, mid-write), and sets it. The file is never truncated by Poppy, so no report can be lost between reading and clearing.
+- `setStatus` logs `status: a -> b` and calls `onStatusChange` only on a change. A new start sets `idle` (before creating the file, so even if that fails the old agent's status isn't left showing). When the agent exits (`processTerminated`), polling stops (so a report written just before exit can't change the status, or auto-open, for a dead agent; the file stays until the next start or quit) and the status is set to `idle`. `markDoneSeen()` turns `done` into `idle` locally.
+
+**Hook command** (every agent): `[ -f "$POPPY_STATUS_FILE" ] && printf %s <status> > "$POPPY_STATUS_FILE"; exit 0`. It's a no-op outside Poppy (unset variable), so global entries are inert for other sessions, and it only writes to an existing file, so a dying agent can't recreate a file Poppy removed.
+- **Limitations:** every descendant of the agent inherits `POPPY_STATUS_FILE`, so e.g. `codex exec` or `gemini -p` run from Claude's Bash tool can report `done` mid-turn through their global hooks. An Esc interrupt (and usually a denied permission) fires no Claude `Stop`, so the pill can stay blue or orange until the next prompt. `POPPY_STATUS_FILE` is also the marker for recognizing Poppy's entries.
+
+**Installing** (`StatusHooks.prepare(command:)`, called by `TerminalSession` when computing the launch spec: at init, on each agent switch, and on each restart; only if `config.statusHooks`). With `statusHooks` false there is also no status file, no `POPPY_STATUS_FILE` and no polling, so no status or auto-open, even if old entries remain in other tools' configs. So a tool's config is only touched when that agent is actually started in Poppy. It returns the command to run:
+- **Claude:** writes `~/.config/poppy/claude-hooks.json` and returns the command with `--settings '<path>'` inserted **right after the executable word** (`insertAfterExecutable`: after any leading `NAME=value` words (`Harness(command:)` also skips them, so `FOO=1 claude` is Claude), and before a shell operator glued to the word, so `claude; exec zsh`, `claude|tee log`, `claude -- "prompt"` and `claude # note` all pass it to claude; tested). Claude layers it over the user's settings; nothing global is touched. If the command already contains `--settings`, that's logged (the user's later flag may override Poppy's, disabling status). Events: SessionStart with matcher `startup|resume|clear` → idle (not `compact`, which fires mid-turn after auto-compaction); UserPromptSubmit, PreToolUse, PostToolUse → working; Notification with matcher `permission_prompt` → waiting (not `idle_prompt`, Claude's ~60 s idle notice); PermissionRequest → waiting; Stop → done. Other events use matcher `.*`.
+- **Codex:** merges into `$CODEX_HOME/hooks.json` (default `~/.codex`): SessionStart → idle; UserPromptSubmit, PreToolUse, PostToolUse → working (PostToolUse, found in the installed Codex binary, reports working again after the user approves a tool); PermissionRequest → waiting; Stop → done. Codex asks the user to approve new hooks once (it records approval per entry position).
+- **Gemini CLI:** merges into `~/.gemini/settings.json` (entries for BeforeTool/AfterTool get `matcher: ".*"`; the others get **no** matcher, which matches all; Gemini treats `matcher` as a regex only for tool events, and other tools' Gemini hooks on this machine omit it): SessionStart → idle; BeforeAgent, BeforeTool, AfterTool → working; Notification → waiting; AfterAgent → done.
+- **opencode:** writes the Poppy-owned plugin `$XDG_CONFIG_HOME/opencode/plugins/poppy-status.ts` (default `~/.config`; only if its content differs): `session.created` → idle and `session.idle` → done for the root session only (a `session.created` with `info.parentID` is a subagent and ignored; the first root's id is remembered and other sessions' `session.idle` is ignored, so a finishing subagent doesn't report done mid-turn), `chat.message`, `tool.execute.before` and `tool.execute.after` → working (after runs once an approved tool finishes), `permission.ask` and the `permission.updated` / `permission.asked` events → waiting; it returns `{}` unless `POPPY_STATUS_FILE` is set.
+- **`.other`:** nothing (the file and variable still exist, so a custom command can report).
+- **Environment:** `CODEX_HOME` and `XDG_CONFIG_HOME` are read from Poppy's own environment (empty counts as unset, a leading `~` is expanded). A value exported only in the shell's dotfiles isn't seen by a Finder-launched Poppy, so hooks would go to the default location.
+- **Merging** (Codex, Gemini): **additive only**, platoon's rule. For each event, skip it if any entry already contains the marker; otherwise append `{"matcher": ".*", "hooks": [{"type": "command", "command": …}]}` (without `matcher` for Gemini's non-tool events). Nothing is removed or reordered (Codex's approvals are per position), and the values of all other keys are kept, but the file is re-serialized (pretty-printed, sorted keys; noisy in a dotfiles repo). If the file isn't a JSON object (including JSONC with comments), or `hooks`/an event has an unexpected shape, nothing is written (logged). Written atomically **through symlinks** (`resolvingSymlinksInPath`, for dotfile managers), keeping the file's POSIX permissions.
+- **Upgrades:** an event with any entry containing the marker counts as installed, so a future change to the command text wouldn't update existing entries. Not needed yet; a versioned marker would be the way. Idempotent (verified on a copy of a real `hooks.json`: each event gained exactly one entry, the existing ones were unchanged, and a second run added nothing).
+
 ## 10. Liquid Glass (`GlassBackgroundView`)
 
 `GlassBackgroundView: NSView` has `var cornerRadius: CGFloat` (its `didSet` forwards the value to the backing view) and `let contentView = NSView()`. `PillView` and `ExpandedView` are added to `contentView`.
@@ -541,6 +584,7 @@ Chosen from the Poppy menu's **Agent ▸** submenu (§7.10). The conversation is
 **Ownership (M10).** `AppDelegate` owns a `HotKeyManager` (`Hotkey/HotKeyManager.swift`) and hands it to `PanelController.hotKeys` (weak), so the menu can show and change the hotkey (§7.10). The manager owns `GlobalHotKey?`, `current: HotKeyCombo?` (the chosen combo) and the recorder (§11.2).
 
 **`HotKeyManager.init(spec:action:)`**
+- `isRecording` (M14): true while the recorder is open; auto-open waits for it (§7.15).
 - `GlobalHotKey(action:)`; nil if the handler can't be installed (then there is no hotkey and "Set Hotkey" is disabled).
 - `HotKeyCombo(spec: config.hotkey)`; if nil, log it and use `Config.defaultHotkey` (`ctrl+opt+space`).
 - `register(combo)`; `current = combo` only if it returned `noErr`. Otherwise log it and continue without a hotkey (the menu item reads just "Set Hotkey").
@@ -562,7 +606,7 @@ Chosen from the Poppy menu's **Agent ▸** submenu (§7.10). The conversation is
   1. If `screenWithMouse()` differs from `screen(for: pillFrame)` (compared by screen number, §7.2), move the pill to the default position (§7.3) on the mouse's screen and save the state.
   2. `expand()`.
 - **Expanded and `panel.isKeyWindow`:** `collapse()`.
-- **Expanded and not key:** `panel.makeKeyAndOrderFront(nil)` plus first responder = `focusTarget`.
+- **Expanded and not key:** `panel.makeKeyAndOrderFront(nil)` plus first responder = `focusTarget` (becoming key also clears "done", §7.15).
 
 ### 11.1 `HotKeyCombo` (`Hotkey/HotKeyCombo.swift`, M10)
 `nonisolated struct HotKeyCombo: Equatable, Sendable { var keyCode: UInt32; var modifiers: UInt32 }` (Carbon key code and Carbon modifier mask). One key table drives parsing, the canonical config string, display and recording.
@@ -662,6 +706,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M11 | `Views/HarnessLogo.swift`, `Resources/Logos/` (PNGs + SVG sources), `scripts/render-logos.swift`, logo copy in `bundle.sh`; the pill becomes a 44×44 circle with just the harness logo, unrecognized CLIs show the Poppy logo, and the menu bar icon becomes the Poppy logo (§7.11, §7.12, §12) | — |
 | M12 | `Terminal/AgentCatalog.swift`; Agent submenu with installed check, `TerminalSession.switchCommand(to:)`, `PillView.update`, `HeaderView.setTitle`, `Config.agents` and `saveValue` (§9.5, §7.10, §8.1) | — |
 | M13 | Expanded panel resizable by edges/corners, terminal reflows while dragging (coalesced, ~20/s) and on release (§7.13); pill size presets Small/Medium/Large in the menu (§7.14); `PanelState.pillDiameter`/`expandedSize` (§8.2) | — |
+| M14 | `Terminal/AgentStatus.swift`; status file + polling in `TerminalSession`; hooks for Claude (`--settings`), Codex, Gemini, opencode; pill tint; Auto-Open menu and `GlassPanel` key guard; config flags (§9.6, §7.15, §8.1) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -687,3 +732,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 13. Whether the 44×44 glass circle keeps a good rim and shadow, whether template logos read well on glass in light and dark, and whether the Poppy logo is legible at 18 pt in the menu bar: M11.
 14. Whether the installed-CLI probe (an interactive login shell without a tty) finishes quickly and finds aliases, including from the Finder-launched app; that under `swift run` it never touches the launching terminal; and whether switching agents cleanly ends the old one and starts the new one: M12.
 15. Whether system edge/corner resizing works on the non-activating titled panel (cursors, all edges, over fullscreen apps), whether the terminal reflows smoothly while dragging without garbling the agent's display, and whether the smaller and larger pills keep a good glass rim: M13.
+16. Whether each agent's hooks fire as mapped (Claude via `--settings`, Codex after approving the new hooks, Gemini, opencode's `chat.message`/`permission.ask` hook names), whether Codex's PostToolUse and Gemini's AfterTool report working after an approval, whether Codex/Gemini need hooks switched on in their settings, whether opencode's plugin directory is `plugins/` (not the older `plugin/`), and whether auto-open steals focus acceptably (key guard) and collapses back after answering: M14.

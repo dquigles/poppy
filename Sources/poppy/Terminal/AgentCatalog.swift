@@ -16,7 +16,7 @@ nonisolated struct AgentProfile: Codable, Sendable, Equatable {
         return word
     }
 
-    private static func isAssignment(_ word: String) -> Bool {
+    static func isAssignment(_ word: String) -> Bool {
         guard let eq = word.firstIndex(of: "="), eq != word.startIndex else { return false }
         let name = word[..<eq]
         return name.first.map { $0 == "_" || $0.isLetter } == true

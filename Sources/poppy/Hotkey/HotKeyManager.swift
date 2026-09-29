@@ -16,6 +16,8 @@ final class HotKeyManager {
     /// (unless registration failed at launch).
     private(set) var current: HotKeyCombo?
     private var recorder: HotKeyRecorder?
+    /// True while the "Set Hotkey" window is open (auto-open waits, DESIGN §7.15).
+    var isRecording: Bool { recorder != nil }
     /// Called after the recorder closes via Esc or a save (not when the user clicked
     /// elsewhere); PanelController refocuses the terminal if expanded.
     var onRecorderClosed: (() -> Void)?

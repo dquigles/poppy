@@ -30,6 +30,39 @@ final class GlassPanel: NSPanel {
 
     override var canBecomeKey: Bool { allowsKey }
 
+    /// Keys arriving before this date are dropped: after an auto-open, typing meant for the
+    /// previous app must not land in the agent (e.g. answer a permission prompt, DESIGN §7.15).
+    private var ignoreKeysUntil: Date?
+    /// After the guard, auto-repeats of a key still held from before are dropped too (a held
+    /// Return would otherwise confirm a prompt), until a fresh key press or any key-up.
+    private var dropRepeats = false
+
+    func ignoreKeys(for interval: TimeInterval) {
+        ignoreKeysUntil = Date().addingTimeInterval(interval)
+        dropRepeats = true
+    }
+
+    private var ignoringKeys: Bool {
+        guard let until = ignoreKeysUntil else { return false }
+        if Date() < until { return true }
+        ignoreKeysUntil = nil
+        return false
+    }
+
+    /// Whether a key event is swallowed by the guard.
+    private func guarded(_ event: NSEvent) -> Bool {
+        if ignoringKeys { return event.type == .keyDown }
+        guard dropRepeats else { return false }
+        if event.type == .keyDown, event.isARepeat { return true }
+        if event.type == .keyDown || event.type == .keyUp { dropRepeats = false }
+        return false
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if guarded(event) { return }
+        super.sendEvent(event)
+    }
+
     /// No zoom: a double-click on the (hidden) titlebar area under the header would
     /// otherwise resize the panel (DESIGN §7.13).
     override func zoom(_ sender: Any?) {}
@@ -99,6 +132,8 @@ final class GlassPanel: NSPanel {
     /// Poppy is never the active app and has no main menu, so menu key
     /// equivalents never fire. Route Cmd-C/V/A to the first responder (DESIGN §6.2).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // ⌘ shortcuts (e.g. ⌘V into a permission prompt) are covered by the key guard too.
+        if ignoringKeys { return true }
         guard event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command] else {
             return super.performKeyEquivalent(with: event)
         }

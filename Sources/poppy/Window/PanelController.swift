@@ -48,6 +48,14 @@ final class PanelController: NSObject {
     static let liveResizeInterval: TimeInterval = 0.05
     /// Global mouse-down monitor, installed only while fully expanded (DESIGN §6.3).
     private var clickOutsideMonitor: Any?
+    /// Why the panel is open, if it opened itself (DESIGN §7.15). After a `.waiting`
+    /// auto-open it collapses again once the agent is working; any manual expand or
+    /// collapse clears it.
+    private var autoOpenedFor: AgentStatus?
+    /// An auto-open that had to wait (animating, resizing, a mouse button down); retried
+    /// when that ends if the status is still the same (DESIGN §7.15).
+    private var pendingAutoOpen: AgentStatus?
+    static let autoOpenKeyGuard: TimeInterval = 0.4
     /// Set by AppDelegate; the menu shows and changes the hotkey through it (DESIGN §7.10).
     weak var hotKeys: HotKeyManager? {
         didSet { hotKeys?.onRecorderClosed = { [weak self] in self?.refocusIfExpanded() } }
@@ -91,6 +99,7 @@ final class PanelController: NSObject {
         if let session {
             session.attach(to: host)
             session.onViewReplaced = { [weak self] in self?.refocusAfterRestart() }
+            session.onStatusChange = { [weak self] status in self?.statusChanged(status) }
         } else {
             let field = NSTextField(frame: NSRect(x: 0, y: host.bounds.height - 24, width: host.bounds.width, height: 24))
             field.placeholderString = "Type here to test focus"
@@ -118,6 +127,9 @@ final class PanelController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelDidResize),
             name: NSWindow.didResizeNotification, object: panel)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(panelDidBecomeKey),
+            name: NSWindow.didBecomeKeyNotification, object: panel)
 
         panel.orderFrontRegardless()
         panel.refreshShadow()
@@ -141,10 +153,13 @@ final class PanelController: NSObject {
 
     // MARK: - Expand / collapse (DESIGN §6.1, §7.7)
 
-    func expand() {
+    /// `focus: false` (an auto-open with "Focus the Panel" off, DESIGN §7.15) shows the
+    /// panel without taking the keyboard; clicking into it (or the hotkey) focuses it.
+    func expand(focus: Bool = true) {
         guard state == .collapsed, !isAnimating else { return }
         isAnimating = true
         state = .expanded
+        autoOpenedFor = nil
 
         pillFrame = panel.frame
         anchor = Self.anchor(for: pillFrame)
@@ -174,12 +189,27 @@ final class PanelController: NSObject {
             panel.setResizable(true)
             panel.contentMinSize = ExpandedView.minSize
             panel.refreshShadow()
-            panel.makeKeyAndOrderFront(nil)
-            if let focusTarget { panel.makeFirstResponder(focusTarget) }
+            if let focusTarget { panel.makeFirstResponder(focusTarget) }  // ready for when it's key
+            if focus {
+                panel.makeKeyAndOrderFront(nil)
+                // Auto-opened: the guard starts when the panel actually takes the keyboard.
+                if autoOpenedFor != nil { panel.ignoreKeys(for: Self.autoOpenKeyGuard) }
+            } else {
+                panel.orderFrontRegardless()
+            }
             fade(expandedView, to: 1) { [weak self] in
-                self?.panel.refreshShadow()
-                self?.installClickOutsideMonitor()
-                self?.finishAnimation()
+                guard let self else { return }
+                panel.refreshShadow()
+                // Unfocused, a click in the user's own app would collapse it at once; the
+                // monitor starts when the panel first becomes key instead.
+                if panel.isKeyWindow { installClickOutsideMonitor() }
+                finishAnimation()
+                // The status moved on while it was still opening: a waiting open collapses
+                // if the user already answered, and is disarmed by anything else.
+                if autoOpenedFor == .waiting, let status = session?.status, status != .waiting {
+                    autoOpenedFor = nil
+                    if status == .working { collapse() }
+                }
             }
         }
     }
@@ -188,6 +218,7 @@ final class PanelController: NSObject {
         guard state == .expanded, !isAnimating, !panel.inLiveResize else { return }
         isAnimating = true
         state = .collapsed
+        autoOpenedFor = nil
         removeClickOutsideMonitor()
         panel.setResizable(false)
 
@@ -210,6 +241,89 @@ final class PanelController: NSObject {
                 self?.panel.refreshShadow()
                 self?.finishAnimation()
             }
+        }
+    }
+
+    // MARK: - Agent status and auto-open (DESIGN §9.6, §7.15)
+
+    private func statusChanged(_ status: AgentStatus) {
+        pillView.setStatus(status)  // only the pill shows status; the menu bar icon never changes
+        if pendingAutoOpen != status { pendingAutoOpen = nil }
+        // A waiting auto-open collapses only on the first status after it, and only if
+        // that's "working" (the user answered). Anything else (e.g. a denied prompt ending
+        // the turn) disarms it, so a later prompt never collapses the panel.
+        let answered = autoOpenedFor == .waiting && status == .working
+        if status != .waiting, autoOpenedFor == .waiting { autoOpenedFor = nil }
+        switch status {
+        case .working:
+            // Not after a "done" auto-open: the user is typing the next prompt in the panel.
+            if answered, state == .expanded, !isAnimating { collapse() }
+        case .waiting:
+            if config.autoOpenOnInput { autoOpen(for: .waiting) } else { appLog("auto-open: off for input") }
+        case .done:
+            if state == .expanded, panel.isKeyWindow {
+                session?.markDoneSeen()  // the user is looking at it
+            } else if config.autoOpenOnDone {
+                autoOpen(for: .done)
+            } else {
+                appLog("auto-open: off for done")
+            }
+        case .idle:
+            break
+        }
+    }
+
+    /// "done" goes back to idle whenever the panel takes the keyboard: expand, the hotkey,
+    /// an auto-open, or a click into it.
+    @objc private func panelDidBecomeKey(_ notification: Notification) {
+        session?.markDoneSeen()
+        // During an expand the fade completion installs it; this covers an unfocused
+        // auto-open that the user clicks into later.
+        if state == .expanded, !isAnimating { installClickOutsideMonitor() }  // idempotent
+    }
+
+    /// Retries an auto-open that had to wait, if the agent is still in that status.
+    private func retryPendingAutoOpen() {
+        guard let reason = pendingAutoOpen else { return }
+        pendingAutoOpen = nil
+        if session?.status == reason { autoOpen(for: reason) }
+    }
+
+    /// Expands (collapsed) or refocuses (expanded, not key), briefly ignoring keys so
+    /// typing meant for the previous app doesn't reach the agent.
+    private func autoOpen(for reason: AgentStatus) {
+        // Also not during a pill drag or with any button down: the drag would keep moving
+        // the now-expanded window and save its frame as the pill's.
+        guard !isAnimating, !panel.inLiveResize, NSEvent.pressedMouseButtons == 0 else {
+            appLog("auto-open: waiting (animating, resizing or mouse down)")
+            pendingAutoOpen = reason
+            if NSEvent.pressedMouseButtons != 0 {
+                // No event marks the end of a press elsewhere; check again shortly.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.retryPendingAutoOpen()
+                }
+            }
+            return
+        }
+        if hotKeys?.isRecording == true {
+            appLog("auto-open: skipped (recording a hotkey)")
+            return
+        }
+        appLog("auto-open: \(state == .collapsed ? "expanding" : panel.isKeyWindow ? "already focused" : "focusing")")
+        switch state {
+        case .collapsed:
+            expand(focus: config.autoOpenFocus)
+            autoOpenedFor = reason  // the key guard starts when the expand makes it key
+        case .expanded where !panel.isKeyWindow:
+            guard config.autoOpenFocus else {
+                panel.orderFrontRegardless()  // already showing; leave the keyboard alone
+                break
+            }
+            panel.ignoreKeys(for: Self.autoOpenKeyGuard)
+            panel.makeKeyAndOrderFront(nil)
+            if let focusTarget { panel.makeFirstResponder(focusTarget) }
+        case .expanded:
+            break
         }
     }
 
@@ -241,6 +355,7 @@ final class PanelController: NSObject {
 
     private func finishAnimation() {
         isAnimating = false
+        defer { retryPendingAutoOpen() }
         if needsReclamp {
             needsReclamp = false
             reclamp()
@@ -376,6 +491,7 @@ final class PanelController: NSObject {
         pillFrame = pillFrame(fromExpanded: panel.frame)
         saveState()
         appLog("expanded size \(Int(size.width))x\(Int(size.height))")
+        retryPendingAutoOpen()
     }
 
     /// Applies a pill size preset. Collapsed, the pill grows or shrinks from its nearest
@@ -473,6 +589,28 @@ final class PanelController: NSObject {
         pillSizeItem.submenu = pillSizeMenu
         menu.addItem(pillSizeItem)
 
+        let autoOpenItem = NSMenuItem(title: "Auto-Open", action: nil, keyEquivalent: "")
+        let autoOpenMenu = NSMenu()
+        autoOpenMenu.autoenablesItems = false
+        for (title, key, on) in [("When Input Is Needed", "autoOpenOnInput", config.autoOpenOnInput),
+                                 ("When Done", "autoOpenOnDone", config.autoOpenOnDone)] {
+            let item = NSMenuItem(title: title, action: #selector(toggleAutoOpen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = key
+            item.state = on ? .on : .off
+            item.isEnabled = session != nil && config.statusHooks
+            autoOpenMenu.addItem(item)
+        }
+        autoOpenMenu.addItem(.separator())
+        let focusItem = NSMenuItem(title: "Focus the Panel", action: #selector(toggleAutoOpen(_:)), keyEquivalent: "")
+        focusItem.target = self
+        focusItem.representedObject = "autoOpenFocus"
+        focusItem.state = config.autoOpenFocus ? .on : .off
+        focusItem.isEnabled = session != nil && config.statusHooks
+        autoOpenMenu.addItem(focusItem)
+        autoOpenItem.submenu = autoOpenMenu
+        menu.addItem(autoOpenItem)
+
         let setHotKey = NSMenuItem(title: setTitle, action: #selector(setHotKey), keyEquivalent: "")
         setHotKey.target = self
         setHotKey.isEnabled = hotKeys?.canRecord == true
@@ -528,6 +666,28 @@ final class PanelController: NSObject {
         pillView.update(harness: Harness(command: config.command), title: config.pillTitle)
         expandedView.header.setTitle(config.pillTitle)
         _ = Config.saveValue(profile.command, forKey: "command")
+    }
+
+    @objc private func toggleAutoOpen(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        let on: Bool
+        switch key {
+        case "autoOpenOnInput":
+            config.autoOpenOnInput.toggle()
+            on = config.autoOpenOnInput
+        case "autoOpenOnDone":
+            config.autoOpenOnDone.toggle()
+            on = config.autoOpenOnDone
+        case "autoOpenFocus":
+            config.autoOpenFocus.toggle()
+            on = config.autoOpenFocus
+        default:
+            return
+        }
+        appLog("auto-open: \(key) = \(on)")
+        if !Config.saveValue(on, forKey: key) {
+            appLog("auto-open: \(key) not saved; it applies until Poppy quits")
+        }
     }
 
     @objc private func selectPillSize(_ sender: NSMenuItem) {

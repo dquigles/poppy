@@ -24,6 +24,7 @@ Workflow per milestone:
 | M11 | Logos (black-and-white transparent PNGs): logo-only circular pill; Poppy logo in the menu bar and for unrecognized CLIs | done |
 | M12 | Agent switching from the menu (no context carry-over) | done |
 | M13 | Resizable expanded panel (drag edges/corners, terminal reflows live); pill size presets | done |
+| M14 | Agent status hooks (all four agents): status-colored pill (menu bar icon unchanged, per the user); Auto-Open when input is needed / done, with or without taking focus | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -109,6 +110,8 @@ Workflow per milestone:
 - M13: the expanded panel resizes by its edges/corners (system resizing on the titled panel); the terminal reflows while dragging, coalesced to ~20/s (the user asked for live reflow over reflow-on-release), and the size is saved. Pill Size ▸ Small 36 / Medium 44 / Large 56. Verified by the user; closes risk 15.
   - Review: `.resizable` only after the expand animation; zoom disabled; non-live resizes (tiling) applied at once; the saved pill origin matches a size changed while expanded. Rejected: silencing the per-resize `terminal size` log (debug stderr only, useful).
 - M13 follow-up: the traffic-light buttons reappeared after M13 (making the panel resizable after the expand animation changes the style mask, and AppKit recreates the buttons). Fixed by hiding them in a `styleMask` `didSet` in `GlassPanel`. Verified by the user.
+- M14: agent status hooks for Claude (`--settings`), Codex and Gemini (additive, env-guarded entries in their global configs) and opencode (a Poppy plugin), reporting through a per-start status file; the pill logo is tinted blue/orange/green (the menu bar icon stays unchanged, the user's choice); Auto-Open ▸ When Input Is Needed / When Done / Focus the Panel. Modeled on platoon's status feed and claude-popup's hooks. Verified by the user (first test: auto-open didn't fire because the option was off; logging added).
+  - Reviews (two passes): statusHooks=false really disables everything; only a waiting auto-open collapses back, and only on the first status after it; the key guard starts when the panel takes the keyboard, covers ⌘ shortcuts and held-key repeats; auto-open waits for animations, live resize and mouse-down and retries; `--settings` goes right after the executable; Codex PostToolUse, Gemini AfterTool and opencode tool.execute.after report working after an approval; Gemini non-tool events get no matcher; merges write through symlinks; hooks only write to an existing status file. Rejected: a versioned hook marker (nothing to upgrade yet).
 
 ## Known issues
 - Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.

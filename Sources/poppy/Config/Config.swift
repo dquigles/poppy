@@ -23,6 +23,13 @@ nonisolated struct Config: Codable, Sendable {
     var hotkey: String
     /// Extra agents for the menu's Agent submenu (DESIGN §9.5). Optional; never written by Poppy.
     var agents: [AgentProfile]?
+    /// Install status hooks for the agent (DESIGN §9.6). Default true.
+    var statusHooks = true
+    /// Auto-open when the agent needs input / is done (DESIGN §7.15). Default false.
+    var autoOpenOnInput = false
+    var autoOpenOnDone = false
+    /// Auto-open takes the keyboard (true) or only shows the panel (DESIGN §7.15). Default true.
+    var autoOpenFocus = true
 
     init(command: String = Config.defaultCommand, cwd: String = Config.defaultCwd, hotkey: String = Config.defaultHotkey) {
         self.command = command
@@ -35,6 +42,11 @@ nonisolated struct Config: Codable, Sendable {
         command = try c.decodeIfPresent(String.self, forKey: .command) ?? Self.defaultCommand
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? Self.defaultCwd
         hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? Self.defaultHotkey
+        // Flags: a wrong type falls back to the default instead of failing the whole file.
+        statusHooks = (try? c.decodeIfPresent(Bool.self, forKey: .statusHooks)) ?? true
+        autoOpenOnInput = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnInput)) ?? false
+        autoOpenOnDone = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnDone)) ?? false
+        autoOpenFocus = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenFocus)) ?? true
         // A bad "agents" entry must not discard the rest of the file: drop the whole list.
         do {
             agents = try c.decodeIfPresent([AgentProfile].self, forKey: .agents)?.filter {
@@ -88,7 +100,7 @@ nonisolated struct Config: Codable, Sendable {
     /// Writes only `key` into config.json, keeping every other key and value as the
     /// user wrote them (DESIGN §8.1). Refuses to touch a file that doesn't parse as a
     /// JSON object. Returns false on failure.
-    static func saveValue(_ value: String, forKey key: String) -> Bool {
+    static func saveValue(_ value: Any, forKey key: String) -> Bool {
         let url = ConfigPaths.config
         var object: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: url.path) {
@@ -104,6 +116,10 @@ nonisolated struct Config: Codable, Sendable {
             }
         }
         object[key] = value
+        guard JSONSerialization.isValidJSONObject(object) else {
+            appLog("\(key): not a JSON value; not saved")
+            return false
+        }
         do {
             let data = try JSONSerialization.data(withJSONObject: object,
                                                   options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])

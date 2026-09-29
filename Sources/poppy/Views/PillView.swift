@@ -15,6 +15,9 @@ final class PillView: NSView {
         (diameter * baseLogoPoints / 44).rounded()
     }
     private var logoWidth: NSLayoutConstraint?
+    /// The harness name (tooltip and accessibility label), before any status is added.
+    private var baseLabel = ""
+    private var status = AgentStatus.idle
     private var logoHeight: NSLayoutConstraint?
 
     /// `title` names the CLI (DESIGN §7.11); it labels the pill when the harness isn't recognized.
@@ -43,9 +46,27 @@ final class PillView: NSView {
     /// Shows `harness`'s logo; also called when the agent is switched (DESIGN §9.5).
     func update(harness: Harness, title: String) {
         logo.image = HarnessLogo.image(for: harness, points: Self.baseLogoPoints)  // scaled by the constraints
-        let label = harness == .other ? title : harness.displayName
-        toolTip = label
-        setAccessibilityLabel(label)
+        baseLabel = harness == .other ? title : harness.displayName
+        updateLabel()
+    }
+
+    /// Status color for the logo, and the status in the tooltip and accessibility label,
+    /// so it isn't conveyed by color alone (DESIGN §9.6).
+    func setStatus(_ status: AgentStatus) {
+        self.status = status
+        logo.contentTintColor = status.tint ?? .labelColor
+        updateLabel()
+    }
+
+    private func updateLabel() {
+        let suffix = switch status {
+        case .idle: ""
+        case .working: " (working)"
+        case .waiting: " (needs input)"
+        case .done: " (done)"
+        }
+        toolTip = baseLabel + suffix
+        setAccessibilityLabel(baseLabel + suffix)
     }
 
     /// Called when the pill size preset changes (DESIGN §7.14).

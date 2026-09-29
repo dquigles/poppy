@@ -8,7 +8,9 @@ nonisolated enum Harness: Sendable {
     /// From the command's first word, e.g. "/usr/local/bin/claude --x" -> .claude.
     /// Aliases and wrappers (e.g. "npx …") are `.other`.
     init(command: String) {
-        let first = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? command
+        // The first word after any leading NAME=value assignments.
+        let words = command.split(whereSeparator: \.isWhitespace).map(String.init)
+        let first = words.first(where: { !AgentProfile.isAssignment($0) }) ?? command
         switch (first as NSString).lastPathComponent.lowercased() {
         case "claude": self = .claude
         case "codex": self = .codex
