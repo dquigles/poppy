@@ -18,6 +18,7 @@ Workflow per milestone:
 | M5 | Embedded PTY terminal (SwiftTerm) | done |
 | M6 | Global hotkey (Carbon) | done |
 | M7 | .app bundling script | done |
+| M8 | Menu bar item (Restart Agent, Quit) | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -88,6 +89,9 @@ Workflow per milestone:
   - fullscreen, Spaces and hotkey behavior is unchanged
   - rounded key-window corners
   - Closes risks 1 (bundled half) and 5.
+- M8: menu bar item (template SF Symbol `terminal`) opens the same menu as the pill's right-click, built by one `PanelController.makeMenu()` so future settings land in both.
+  - Verified by the user: icon adapts to light/dark, Restart Agent and Quit work, no activation over fullscreen apps, no Dock icon. Closes risk 10.
+  - Review: adopted the controller as `NSMenuDelegate` so the long-lived menu bar menu is rebuilt on each open (no stale state once settings exist), a text fallback if the symbol is missing, a creation log line, and DESIGN §3/§4/§14 fixes.
 
 ## Known issues
 - Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.

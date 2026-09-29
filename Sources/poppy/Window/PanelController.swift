@@ -1,7 +1,7 @@
 import AppKit
 
 /// Owns the panel and its views: state machine, frames, animation, observers,
-/// context menu (DESIGN §5–7).
+/// Poppy menu (DESIGN §5–7).
 final class PanelController: NSObject {
     enum State { case collapsed, expanded }
 
@@ -266,11 +266,25 @@ final class PanelController: NSObject {
         PanelState(pillOrigin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY)).save()
     }
 
-    // MARK: - Context menu (DESIGN §7.10)
+    // MARK: - Poppy menu (DESIGN §7.10)
 
     func showContextMenu(event: NSEvent, in view: NSView) {
+        NSMenu.popUpContextMenu(makeMenu(), with: event, for: view)
+    }
+
+    /// Poppy's menu, shared by the right-click context menu and the menu bar item.
+    /// The controller is its delegate, so a long-lived menu (the menu bar's) is
+    /// rebuilt each time it opens and never shows stale items.
+    func makeMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
+        populateMenu(menu)
+        return menu
+    }
+
+    private func populateMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
 
         let restart = NSMenuItem(title: "Restart Agent", action: #selector(restartAgent), keyEquivalent: "")
         restart.target = self
@@ -280,8 +294,6 @@ final class PanelController: NSObject {
         let quit = NSMenuItem(title: "Quit Poppy", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
-
-        NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
     @objc private func restartAgent() {
@@ -377,5 +389,11 @@ final class PanelController: NSObject {
             result.origin.y = min(max(frame.minY, area.minY), area.maxY - frame.height)
         }
         return result
+    }
+}
+
+extension PanelController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        populateMenu(menu)
     }
 }

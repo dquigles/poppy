@@ -36,7 +36,7 @@ Sources/poppy/
   App/AppDelegate.swift             creates and owns everything; quit/cleanup
   Config/Config.swift               Config (config.json) + PanelState (state.json) load/save
   Window/GlassPanel.swift           NSPanel subclass
-  Window/PanelController.swift      state machine, frames, animation, observers, context menu
+  Window/PanelController.swift      state machine, frames, animation, observers, Poppy menu (§7.10)
   Views/GlassBackgroundView.swift   NSGlassEffectView / NSVisualEffectView fallback
   Views/PillView.swift              collapsed content: click vs drag, right-click
   Views/ExpandedView.swift          ExpandedView + HeaderView (drag, title, collapse button) + contentHost
@@ -49,7 +49,7 @@ docs/DESIGN.md, docs/PROGRESS.md
 ```
 
 Ownership: strong references go downward; back-references are `weak`.
-- `AppDelegate` owns `config: Config`, `session: TerminalSession` (from M5), `controller: PanelController`, and `hotKey: GlobalHotKey` (from M6).
+- `AppDelegate` owns `config: Config`, `session: TerminalSession` (from M5), `controller: PanelController`, `hotKey: GlobalHotKey` (from M6), and `statusItem: NSStatusItem` (from M8; the item is removed from the menu bar when deallocated, so it must be retained).
 - `PanelController` is `final class PanelController: NSObject`; button/menu actions are `@objc` methods.
 - `PanelController.init(config:session:)` (from M4; M2–M3 use a temporary `init()` with no arguments and a hard-coded title `claude`):
   - It creates and owns the `GlassPanel`, `GlassBackgroundView`, `PillView` and `ExpandedView`.
@@ -79,10 +79,11 @@ Files are introduced in the milestone that needs them (§13).
   2. Load the config (§8.1).
   3. Create the session (M5+): `TerminalSession(config:)`. This only computes the launch spec; the process starts in `attach(to:)`.
   4. Create the controller. It shows the pill with `orderFrontRegardless()`.
-  5. Register the hotkey (M6+).
+  5. Create the menu bar item (M8+, §7.12).
+  6. Register the hotkey (M6+).
 - `NSApp.activate` and `NSRunningApplication.activate` are **never** called.
 - `applicationWillTerminate`: `session?.terminateChild()` (§9.4).
-- Quitting: the context menu's Quit calls `NSApp.terminate(nil)`. Under `swift run`, Ctrl-C in the launching shell also quits (default SIGINT; no handler).
+- Quitting: the Poppy menu's Quit (context menu or menu bar item, §7.10) calls `NSApp.terminate(nil)`. Under `swift run`, Ctrl-C in the launching shell also quits (default SIGINT; no handler).
 
 ### Logging
 `Log.swift`: `nonisolated func appLog(_ message: String)` writes `"[Poppy] " + message + "\n"` as UTF-8 to `FileHandle.standardError`. No os_log.
@@ -293,12 +294,13 @@ In `PillView`, ignored while `isAnimating`:
   - `wantsLayer = true`, `layer.cornerRadius = 10`, `layer.masksToBounds = true`, no background color.
   - Until M5 it holds the placeholder: an editable `NSTextField` filling its width at the top, with placeholder text "Type here to test focus".
 
-### 7.10 Context menu
-`PanelController.showContextMenu(event:in:)`:
-- Builds an `NSMenu` with `autoenablesItems = false` and two items, both with explicit `target = self` (the controller):
+### 7.10 Poppy menu (context menu and menu bar)
+`PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
+- It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds two, both with explicit `target = self`:
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
   - **"Quit Poppy":** action `quit` calls `NSApp.terminate(nil)`.
-- Shows it with `NSMenu.popUpContextMenu(menu, with: event, for: view)`.
+- `menuNeedsUpdate(_:)` calls `populateMenu(_:)` again, so the long-lived menu bar copy is rebuilt each time it opens and never shows stale state.
+- `PanelController.showContextMenu(event:in:)` shows `makeMenu()` with `NSMenu.popUpContextMenu(menu, with: event, for: view)`.
 
 ### 7.11 Pill contents
 - `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`).
@@ -306,6 +308,14 @@ In `PillView`, ignored while `isAnimating`:
   - SF Symbol `terminal` (`NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)`)
   - a label with `pillTitle` (13 pt, medium weight)
 - Both use `labelColor`.
+
+### 7.12 Menu bar item (M8)
+- `AppDelegate` creates it after the controller: `NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`.
+- `button.image` = SF Symbol `terminal` (`accessibilityDescription: "Poppy"`) with `isTemplate = true`, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`.
+- If the symbol is unavailable, `button.title = "P"` and a log line, so the item is never invisible.
+- `statusItem.menu = controller.makeMenu()` (repopulated on each open, §7.10). Clicking the icon shows the menu; no custom click handling.
+- `appLog("status item created")`.
+- The accessory policy is unchanged: no Dock icon, and opening the menu does not activate Poppy.
 
 ## 8. Configuration and state
 
@@ -518,6 +528,7 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 | M5 | SwiftTerm, `Terminal/*` | — |
 | M6 | `Hotkey/GlobalHotKey.swift` | — |
 | M7 | `scripts/bundle.sh`, `Resources/Info.plist`, `.gitignore` `/build` | — |
+| M8 | Menu bar item (§7.12); `PanelController.makeMenu()` shared with the context menu (§7.10) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -537,3 +548,4 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 7. Carbon hotkey on macOS 26, and conflicts with ⌃⌥Space: M6.
 8. Whether SwiftTerm's `backgroundOpacity` looks good over glass: M5.
 9. Whether `panel.animator().setFrame` honors `ctx.timingFunction` (easing only; judged by eye): M4.
+10. The menu bar item's menu doesn't activate Poppy or take key/frontmost from the underlying app, collapsed or expanded: M8.
