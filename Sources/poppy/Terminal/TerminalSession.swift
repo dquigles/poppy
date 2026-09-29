@@ -33,6 +33,12 @@ final class TerminalSession {
         spec = Self.launchSpec(for: config)
         logSpec()
         Self.removeStaleStatusFiles()
+        Attachments.removeOldFiles()
+    }
+
+    /// Pastes `text` (e.g. attachment paths) into the agent as if typed (DESIGN §9.10).
+    func paste(_ text: String) {
+        currentView?.pasteText(text)
     }
 
     /// The launch spec, with the command readied for status hooks (DESIGN §9.6).
@@ -64,6 +70,7 @@ final class TerminalSession {
 
     func restart() {
         appLog("restarting agent")
+        Attachments.removeOldFiles()
         spec = Self.launchSpec(for: config)  // re-readies the hooks (e.g. a deleted Claude hooks file)
         logSpec()
         terminateChild(reap: true)
@@ -120,6 +127,7 @@ final class TerminalSession {
             scroller.isHidden = true
         }
         view.setFrameSize(host.bounds.size)
+        view.registerForDrops()  // files and images (DESIGN §9.10)
         host.addSubview(view)
         currentView = view
         exited = false
@@ -240,6 +248,53 @@ extension TerminalSession: @preconcurrency LocalProcessTerminalViewDelegate {
 /// Terminal view that swallows input after the agent exits and restarts on Enter.
 final class PoppyTerminalView: LocalProcessTerminalView {
     weak var session: TerminalSession?
+
+    /// Pastes `text` as if typed, bracketed when the app asked for it (so an agent treats
+    /// a path as one paste, e.g. Claude attaching an image, DESIGN §9.10).
+    func pasteText(_ text: String) {
+        let text = Attachments.sanitized(text)
+        guard !text.isEmpty else { return }
+        if terminal.bracketedPasteMode {
+            send(data: EscapeSequences.bracketedPasteStart[0...])
+            send(txt: text)
+            send(data: EscapeSequences.bracketedPasteEnd[0...])
+        } else {
+            send(txt: text)
+        }
+    }
+
+    /// ⌘V: files and images (e.g. a screenshot copied with ⌘⌃⇧4) paste as paths; text as usual.
+    override func paste(_ sender: Any) {
+        let pasteboard = NSPasteboard.general
+        if Attachments.hasAttachment(pasteboard),
+           Attachments.text(from: pasteboard, completion: { [weak self] text in self?.pasteText(text) }) {
+            return
+        }
+        super.paste(sender)
+    }
+
+    // MARK: Drag and drop (DESIGN §9.10)
+
+    func registerForDrops() {
+        registerForDraggedTypes(Attachments.dropTypes)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Attachments.operation(for: sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { Attachments.operation(for: sender) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        Attachments.logDrag(sender, "on terminal")
+        let pasteboard = sender.draggingPasteboard
+        if Attachments.text(from: pasteboard, completion: { [weak self] text in self?.pasteText(text) }) {
+            return true
+        }
+        guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return false }
+        pasteText(text)
+        return true
+    }
 
     /// macOS line-editing shortcuts, as Ghostty maps them by default. SwiftTerm sends
     /// Command keys through interpretKeyEvents, which turns these into text-editing

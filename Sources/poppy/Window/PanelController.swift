@@ -663,6 +663,11 @@ final class PanelController: NSObject {
 
         menu.addItem(.separator())
 
+        let screenshot = NSMenuItem(title: "Take Screenshot", action: #selector(takeScreenshot), keyEquivalent: "")
+        screenshot.target = self
+        screenshot.isEnabled = session != nil && !isAnimating
+        menu.addItem(screenshot)
+
         let restart = NSMenuItem(title: "Restart Agent", action: #selector(restartAgent), keyEquivalent: "")
         restart.target = self
         restart.isEnabled = session != nil
@@ -880,6 +885,75 @@ final class PanelController: NSObject {
 
     @objc private func setHotKey() {
         hotKeys?.beginRecording()
+    }
+
+    // MARK: - Attachments (DESIGN §9.10)
+
+    var canAcceptDrop: Bool { session != nil && !isAnimating }
+
+    /// A drop on the pill: files and images become paths, text is pasted as is; then the
+    /// panel opens on it.
+    func dropped(_ pasteboard: NSPasteboard) -> Bool {
+        guard canAcceptDrop else { return false }
+        let deliver: @MainActor (String) -> Void = { [weak self] text in self?.sendToAgent(text) }
+        if Attachments.text(from: pasteboard, completion: deliver) { return true }
+        guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return false }
+        deliver(text)
+        return true
+    }
+
+    /// Pastes `text` into the agent and shows it, focused. Not while the agent is asking
+    /// for input: the characters could answer its prompt, so it's only shown (DESIGN §9.10).
+    private func sendToAgent(_ text: String) {
+        if session?.status == .waiting {
+            appLog("attachments: not pasted, the agent is waiting for an answer")
+        } else {
+            session?.paste(text)
+        }
+        guard !isAnimating else { return }
+        if state == .collapsed {
+            expand()
+        } else if !panel.isKeyWindow {
+            panel.makeKeyAndOrderFront(nil)
+            if let focusTarget { panel.makeFirstResponder(focusTarget) }
+        }
+    }
+
+    /// The system's interactive capture (crosshair; Space toggles window capture; Esc
+    /// cancels), saved as a PNG whose path goes into the agent. An open panel collapses
+    /// first so it isn't in the way, and opens again with the result.
+    @objc private func takeScreenshot() {
+        guard session != nil, !isAnimating, Attachments.prepareDirectory() else { return }
+        let delay: TimeInterval
+        if state == .expanded {
+            collapse()
+            delay = Self.frameDuration + Self.fadeDuration + 0.1
+        } else {
+            delay = 0
+        }
+        let url = Attachments.newImageURL(prefix: "screenshot")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            let capture = Process()
+            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            capture.arguments = ["-i", "-x", url.path]  // interactive, no sound
+            capture.terminationHandler = { _ in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard FileManager.default.fileExists(atPath: url.path) else {
+                            appLog("screenshot: cancelled")
+                            return
+                        }
+                        appLog("screenshot: \(url.lastPathComponent)")
+                        self?.sendToAgent(Attachments.pasteText(for: [url]))
+                    }
+                }
+            }
+            do {
+                try capture.run()
+            } catch {
+                appLog("screenshot: could not run screencapture: \(error)")
+            }
+        }
     }
 
     @objc private func restartAgent() {

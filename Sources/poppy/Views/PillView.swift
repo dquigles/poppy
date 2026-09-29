@@ -28,6 +28,9 @@ final class PillView: NSView {
     init(frame: NSRect, harness: Harness, title: String) {
         super.init(frame: frame)
 
+        // NSImageView registers for image drags itself; it would take drops over the middle
+        // of the pill and refuse them (DESIGN §9.10).
+        logo.unregisterDraggedTypes()
         logo.imageScaling = .scaleProportionallyUpOrDown
         logo.contentTintColor = .labelColor  // black in light mode, white in dark
         logo.translatesAutoresizingMaskIntoConstraints = false
@@ -48,6 +51,7 @@ final class PillView: NSView {
         ring.lineCap = .round
         ring.isHidden = true
         layer?.addSublayer(ring)
+        registerForDraggedTypes(Attachments.dropTypes)  // drop onto the pill (DESIGN §9.10)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         update(harness: harness, title: title)
@@ -170,6 +174,19 @@ final class PillView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         controller?.showContextMenu(event: event, in: self)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        controller?.canAcceptDrop == true ? Attachments.operation(for: sender) : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        controller?.canAcceptDrop == true ? Attachments.operation(for: sender) : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        Attachments.logDrag(sender, "on pill")
+        return controller?.dropped(sender.draggingPasteboard) ?? false
     }
 }
 
