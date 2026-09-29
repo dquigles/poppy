@@ -20,7 +20,7 @@ Poppy is a native macOS utility. A small Liquid Glass "pill" floats in a screen 
 
 ### Concurrency rules
 - These are `nonisolated`:
-  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, and `Harness` (§7.11)
+  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, `Harness` (§7.11), and `AgentProfile` (§9.5)
   - `appLog` (§4)
   - the Carbon C handler (§11)
 - Code on the main thread that is not statically main-actor (the bodies of `NSAnimationContext` completion handlers, `NotificationCenter` block observers with `queue: .main`, and the Carbon handler) wraps its body in `MainActor.assumeIsolated { … }`. Never capture non-Sendable parameters (raw pointers, `Notification`) inside that closure; extract Sendable values first.
@@ -42,7 +42,8 @@ Sources/poppy/
   Views/HarnessLogo.swift           Harness detection + logo loading (§7.11)
   Views/ExpandedView.swift          ExpandedView + HeaderView (drag, title) + contentHost
   Terminal/TerminalSession.swift    TerminalSession + PoppyTerminalView
-  Terminal/ShellEnvironment.swift   builds executable/args/env for the child
+  Terminal/ShellEnvironment.swift   builds executable/args/env for the child (and the agent probe)
+  Terminal/AgentCatalog.swift       AgentProfile, the agent list and the installed-CLI probe (§9.5)
   Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper (register/unregister)
   Hotkey/HotKeyCombo.swift          key table: parse, config string, display, validity (§11.1)
   Hotkey/HotKeyManager.swift        owns the hotkey, current combo and recorder (§11)
@@ -62,7 +63,8 @@ Ownership: strong references go downward; back-references are `weak`.
   - It calls `session.attach(to: expandedView.contentHost)`.
   - `session` is `TerminalSession?`, which is `nil` before M5.
 - `PillView` and `HeaderView` have a `weak var controller: PanelController?`. On right-click they call `controller.showContextMenu(event:in:)`.
-- `TerminalSession` owns the current `PoppyTerminalView`.
+- `PanelController` owns the `AgentCatalog` (M12, §9.5).
+- `TerminalSession` owns the current `PoppyTerminalView` and keeps its own `config` copy (M12).
   - It exposes `var focusView: NSView?`, which is the current terminal view. `PanelController` reads it whenever it needs a first responder.
   - Before M5, `PanelController` uses the placeholder text field instead. The placeholder is created only when `session == nil`, so from M5 on it never exists and `focusTarget` is always the terminal.
 - `PoppyTerminalView` has a `weak var session: TerminalSession?`.
@@ -304,7 +306,7 @@ In `PillView`, ignored while `isAnimating`:
   - On drag end: clamp, recompute `pillFrame` (§7.6), save state.
   - `acceptsFirstMouse` returns `true`. Right-click shows the context menu.
   - Contents:
-    - Centered title label: `pillTitle` (§7.11), 12 pt system font, `secondaryLabelColor`.
+    - Centered title label: `pillTitle` (§7.11), 12 pt system font, `secondaryLabelColor`. `setTitle(_:)` changes it on an agent switch (§9.5).
     - No buttons (the collapse button was removed in M9; §6.3). `hitTest` returns the header itself for any point inside it, so the title also drags.
 - **`contentHost`** (`NSView`):
   - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left, right and bottom. The gap below the header is 0.
@@ -314,6 +316,7 @@ In `PillView`, ignored while `isAnimating`:
 ### 7.10 Poppy menu (context menu and menu bar)
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
 - It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
+  - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5). Enabled only if `session != nil`.
   - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
   - separator
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
@@ -324,8 +327,8 @@ In `PillView`, ignored while `isAnimating`:
 
 ### 7.11 Pill contents (the harness logo, M11)
 - `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`). From M11 it is used only by the expanded header's title (§7.9).
-- **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the same first word, lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch; a later agent-switching feature will change it at runtime.
-- **The pill** shows no text, only a centered `NSImageView`, 24×24 pt, `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)`: its tooltip and accessibility label are `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
+- **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the same first word, lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch, and again by `switchAgent` (§9.5) when the agent changes.
+- **The pill** shows no text, only a centered `NSImageView`, 24×24 pt, `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)` calls `update(harness:title:)` (also called on an agent switch, §9.5), which sets the logo, and the tooltip and accessibility label to `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
 - **Logos are black-and-white only** (the user's choice in M11: no brand colors). Each is a transparent PNG, black on alpha, used as a template image, so it tints to `labelColor` on the pill (black in light mode, white in dark) and follows the menu bar's appearance.
 - **`HarnessLogo.image(for:points:)`** loads `<name>.png` (`claude`, `codex`, `gemini`, `opencode`; `.other`, i.e. unrecognized CLIs and plain shells, uses `poppy`), sets `size` to `points`×`points`, `isTemplate = true`, `accessibilityDescription = displayName`. `HarnessLogo.poppy(points:)` loads `poppy.png` the same way (description "Poppy"). A file that can't be found logs `logo: <name>.png not found in [...]` and falls back to SF Symbol `terminal` (natural size, template).
 - **Where the PNGs are loaded from**, first match wins:
@@ -349,18 +352,20 @@ In `PillView`, ignored while `isAnimating`:
 
 The directory is `~/.config/poppy/`, created with intermediate directories if missing. Both types are `nonisolated struct … : Codable, Sendable`.
 
-### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey`, from M10)
+### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10) and `command` (M12))
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
+Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", "command": "claude --dangerously-skip-permissions" }]`, extra entries for the Agent submenu (§9.5). It's `var agents: [AgentProfile]?`; the synthesized encoder omits it when nil, so the defaults file doesn't contain it. Decoding it can't fail the whole file: if it doesn't decode (e.g. an entry without `name`), log `config.json "agents" is invalid, ignoring it` and use nil; entries whose `name` or `command` is blank after trimming are dropped.
 
 **Decoding**
 - A hand-written `init(from:)` uses `decodeIfPresent` for each key, falling back to the defaults above. Unknown keys are ignored.
 
-**Saving the hotkey** (M10, `static func saveHotkey(_ spec: String) -> Bool`)
-- Read config.json with `JSONSerialization` as a `[String: Any]`, set only `"hotkey"`, and write it back (pretty-printed, sorted keys, unescaped slashes, atomic). Every other key and value, including unknown keys, is kept as written; the `POPPY_COMMAND` override is never written.
-- `AppDelegate.config.hotkey` is not updated; nothing reads `config` after launch.
-- If the file is missing, write `{"hotkey": …}` alone (the other keys fall back to defaults on load).
+**Saving one key** (`static func saveValue(_ value: String, forKey key: String) -> Bool`; `saveHotkey(_:)` (M10) calls it with `"hotkey"`, and the agent switch (M12, §9.5) with `"command"`)
+- Read config.json with `JSONSerialization` as a `[String: Any]`, set only `key`, and write it back (pretty-printed, sorted keys, unescaped slashes, atomic). Every other key and value, including unknown keys, is kept as written; the `POPPY_COMMAND` override is never written.
+- The live copies of the config are `PanelController.config` (its `command` changes on an agent switch, §9.5) and `TerminalSession`'s own `config`. `AppDelegate.config` is not updated after launch, and nothing reads it after launch.
+- Logs `saved <key> <value> to <path>`, or the failure.
+- If the file is missing, write `{"<key>": …}` alone (the other keys fall back to defaults on load).
 - If the file exists but can't be read or isn't a JSON object: log it, don't touch the file, return false.
 
 **Load rules**
@@ -415,7 +420,7 @@ Callbacks arrive on the main queue.
 
 Each callback returns early if `source !== currentView`.
 
-**`init(config: Config)`** computes the launch spec (executable, args, env, cwd; §9.2) once and stores it; `restart()` reuses it.
+**`init(config: Config)`** keeps its own copy of `config`, computes the launch spec (executable, args, env, cwd; §9.2) and stores it; `restart()` reuses it, and `switchCommand(to:)` (§9.5) recomputes it.
 
 **`attach(to host: NSView)`**
 - Stores `host` (weak).
@@ -465,6 +470,30 @@ SwiftTerm routes Command-key presses through `interpretKeyEvents` and ignores th
 2. Only if that returns −1: `kill(shellPid, SIGHUP)`.
 
 It's called from `restart()` and `applicationWillTerminate`. In `restart()` only, after signalling, reap the old child on a global queue: poll `waitpid(pid, &st, WNOHANG)` every 50 ms for up to 1 s (stop on any non-zero result, including -1/ECHILD if SwiftTerm already reaped it); if it's still alive, `kill(-pid, SIGKILL)`, `kill(pid, SIGKILL)`, then a blocking `waitpid`.
+
+### 9.5 Switching agents (M12)
+Chosen from the Poppy menu's **Agent ▸** submenu (§7.10). The conversation is **not** carried over: the old agent is ended and the new one starts fresh (carrying context over may come later).
+
+**`AgentProfile`** (`Terminal/AgentCatalog.swift`, `nonisolated struct … Codable, Sendable, Equatable`): `name`, `command`, and `probeWord: String?`, the word checked with `command -v`: the command's first word after any leading `NAME=value` assignments, with a leading `~/` expanded to the home directory. Nil (can't tell, treated as installed, not probed) for an empty command or a word containing a quote, `$`, backtick or backslash.
+
+**`AgentCatalog`** (owned by `PanelController`):
+- `builtIns`: Claude Code (`claude`), Codex (`codex`), Gemini CLI (`gemini`), opencode (`opencode`).
+- `AgentCatalog.init(launchCommand:)` keeps the command Poppy launched with (`PanelController.init` passes `config.command`).
+- `profiles(for: config)`: the built-ins, then `config.agents` in order, skipping any whose command equals one already listed (`same(_:_:)`: equal after trimming spaces). Then the current command and the launch command, each if not already listed, are inserted **first** (current before launch) as `AgentProfile(name: <its pillTitle>, command:)`. So the running agent is always listed and checked, and a custom launch command (e.g. `aider`) stays available after switching away from it.
+- **Installed check:** `refreshIfNeeded(profiles)` (called from `PanelController.init` and each time the menu is built) runs a background probe of the profiles' `probeWord`s if none has run, the last is over 60 s old, or there are words not yet probed (and none is already running, and there's at least one word). `ShellEnvironment.probeSpec(script:)` gives the agent's own shell, `-l -i -c`, environment and home as working directory, so PATH, aliases and functions match what the agent would see. The script loops over the single-quoted words: `command -v "$c" >/dev/null 2>&1 && printf 'POPPY_AGENT:%s\n' "$c"`; only lines with that marker count, so dotfile output is ignored. A result shows the next time the menu opens; on success, log `agents installed: …`; a failed or timed-out probe leaves the previous result unchanged.
+  - **Running the probe** (`runProbe`, on a global queue): `posix_spawn` with `POSIX_SPAWN_SETSID` (its own session, so no controlling terminal: under `swift run` it can't print to, or stop, the launching terminal) and `POSIX_SPAWN_CLOEXEC_DEFAULT` (no inherited descriptors, e.g. the agent's pty); stdin and stderr `/dev/null`, stdout a pipe; `chdir` via `posix_spawn_file_actions_addchdir_np`.
+  - It reads the pipe non-blocking (`poll`, 100 ms) **until the shell exits** (`waitpid` `WNOHANG`), then drains once more; it doesn't wait for EOF, since a background job started by the dotfiles may keep the pipe open (verified with a test shell that leaves `sleep 30` running). A shell killed by a signal counts as a failure.
+  - After 5 s: log `agent probe timed out`, `SIGKILL` the process group (`kill(-pid)`) and the shell (interactive shells ignore SIGTERM), reap it, and fail (verified with a test shell that ignores SIGTERM).
+  - `isInstalled(profile)`: nil if the profile has no `probeWord` or no successful probe has included it (both treated as installed), else true/false.
+
+**The submenu** (`makeAgentMenu()`, rebuilt with the menu each time it opens): stores the list in `menuAgents`, then one item per profile: title `name`, or `name + " (not installed)"`; `image` = `HarnessLogo.image(for: Harness(command:), points: 16)` (the Poppy flower for unrecognized commands); `state = .on` for the running command; `tag` = index; action `selectAgent(_:)`. Disabled if not installed, unless it's the running one.
+
+**`switchAgent(to:)`** (`selectAgent` looks the profile up by tag):
+1. Return if there's no session or the profile's command is the running one (use Restart Agent to restart).
+2. `config.command = profile.command` (`PanelController.config` is a `var`).
+3. `session.switchCommand(to:)`: sets its own `config.command`, recomputes the `LaunchSpec`, logs it, then `restart()` (§9.3), which ends the old agent, starts a new view and refocuses it if expanded.
+4. `pillView.update(harness:title:)` (new logo, tooltip and accessibility label) and `expandedView.header.setTitle(config.pillTitle)`.
+5. `Config.saveValue(profile.command, forKey: "command")`, so the next launch starts it. (A `POPPY_COMMAND` env var still overrides it at launch.)
 
 ## 10. Liquid Glass (`GlassBackgroundView`)
 
@@ -606,6 +635,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M9 | Click outside collapses (§6.3); collapse button removed (§7.9) | — |
 | M10 | `HotKeyCombo` with more keys (§11.1), `HotKeyManager`, register/unregister `GlobalHotKey` (§11), the recorder (§11.2), hotkey shown in the Set Hotkey menu item and the Collapse item removed (§7.10), `Config.saveHotkey` (§8.1) | — |
 | M11 | `Views/HarnessLogo.swift`, `Resources/Logos/` (PNGs + SVG sources), `scripts/render-logos.swift`, logo copy in `bundle.sh`; the pill becomes a 44×44 circle with just the harness logo, unrecognized CLIs show the Poppy logo, and the menu bar icon becomes the Poppy logo (§7.11, §7.12, §12) | — |
+| M12 | `Terminal/AgentCatalog.swift`; Agent submenu with installed check, `TerminalSession.switchCommand(to:)`, `PillView.update`, `HeaderView.setTitle`, `Config.agents` and `saveValue` (§9.5, §7.10, §8.1) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -629,3 +659,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 11. Whether the global mouse monitor fires for clicks on other apps over fullscreen Spaces, on the desktop, and on other menu bar items, without Accessibility permission, both unbundled and bundled; and that dragging a file from Finder into the expanded terminal doesn't collapse it: M9.
 12. Whether the recorder panel becomes key and receives keys (including ⌘ combos) without activating Poppy, over fullscreen apps too, and whether a changed hotkey takes effect immediately; the recorder can always be dismissed; and keyboard focus returns to the underlying app after it closes over the collapsed pill: M10.
 13. Whether the 44×44 glass circle keeps a good rim and shadow, whether template logos read well on glass in light and dark, and whether the Poppy logo is legible at 18 pt in the menu bar: M11.
+14. Whether the installed-CLI probe (an interactive login shell without a tty) finishes quickly and finds aliases, including from the Finder-launched app; that under `swift run` it never touches the launching terminal; and whether switching agents cleanly ends the old one and starts the new one: M12.

@@ -20,7 +20,10 @@ final class PanelController: NSObject {
     static let fadeDuration: TimeInterval = 0.12
 
     let panel: GlassPanel
-    private let config: Config
+    private var config: Config
+    private let agents: AgentCatalog
+    /// The profiles in the menu as last built; menu items refer to them by `tag`.
+    private var menuAgents: [AgentProfile] = []
     private let session: TerminalSession?
     private let glass: GlassBackgroundView
     private let pillView: PillView
@@ -42,6 +45,7 @@ final class PanelController: NSObject {
 
     init(config: Config, session: TerminalSession?) {
         self.config = config
+        agents = AgentCatalog(launchCommand: config.command)
         self.session = session
         pillFrame = Self.initialPillFrame(from: PanelState.load())
         panel = GlassPanel(contentRect: pillFrame)
@@ -87,6 +91,7 @@ final class PanelController: NSObject {
 
         panel.orderFrontRegardless()
         panel.refreshShadow()
+        agents.refreshIfNeeded(agents.profiles(for: config))
     }
 
     private var focusTarget: NSView? { session?.focusView ?? placeholderField }
@@ -328,6 +333,11 @@ final class PanelController: NSObject {
     private func populateMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        let agentItem = NSMenuItem(title: "Agent", action: nil, keyEquivalent: "")
+        agentItem.submenu = makeAgentMenu()
+        agentItem.isEnabled = session != nil
+        menu.addItem(agentItem)
+
         // One line for both: "Set Hotkey (⌃⌥Space)", or just "Set Hotkey" when none is registered.
         var setTitle = "Set Hotkey"
         if let combo = hotKeys?.current { setTitle += " (\(combo.displayString))" }
@@ -348,6 +358,44 @@ final class PanelController: NSObject {
         let quit = NSMenuItem(title: "Quit Poppy", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
+    }
+
+    /// One item per profile, with its logo; the running one is checked (DESIGN §9.5).
+    private func makeAgentMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        menuAgents = agents.profiles(for: config)
+        agents.refreshIfNeeded(menuAgents)
+        for (index, profile) in menuAgents.enumerated() {
+            let installed = agents.isInstalled(profile) ?? true
+            let title = installed ? profile.name : "\(profile.name) (not installed)"
+            let item = NSMenuItem(title: title, action: #selector(selectAgent(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            item.image = HarnessLogo.image(for: Harness(command: profile.command), points: 16)
+            let current = AgentCatalog.same(profile.command, config.command)
+            item.state = current ? .on : .off
+            item.isEnabled = installed || current
+            submenu.addItem(item)
+        }
+        return submenu
+    }
+
+    @objc private func selectAgent(_ sender: NSMenuItem) {
+        guard menuAgents.indices.contains(sender.tag) else { return }
+        switchAgent(to: menuAgents[sender.tag])
+    }
+
+    /// Starts `profile` in a fresh terminal, updates the logo and title, and saves it as
+    /// the command for the next launch (DESIGN §9.5). Picking the running agent does nothing.
+    private func switchAgent(to profile: AgentProfile) {
+        guard let session, !AgentCatalog.same(profile.command, config.command) else { return }
+        appLog("switching agent to \(profile.name)")
+        config.command = profile.command
+        session.switchCommand(to: profile.command)
+        pillView.update(harness: Harness(command: config.command), title: config.pillTitle)
+        expandedView.header.setTitle(config.pillTitle)
+        _ = Config.saveValue(profile.command, forKey: "command")
     }
 
     @objc private func setHotKey() {

@@ -35,11 +35,12 @@ final class HeaderView: NSView {
     weak var controller: PanelController?
 
     private var drag = WindowDrag()
+    private let label = NSTextField(labelWithString: "")
 
     init(frame: NSRect, title: String) {
         super.init(frame: frame)
 
-        let label = NSTextField(labelWithString: title)
+        label.stringValue = title
         label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -51,6 +52,10 @@ final class HeaderView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setTitle(_ title: String) {
+        label.stringValue = title
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 

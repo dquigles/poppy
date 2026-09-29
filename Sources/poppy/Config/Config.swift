@@ -21,6 +21,8 @@ nonisolated struct Config: Codable, Sendable {
     var command: String
     var cwd: String
     var hotkey: String
+    /// Extra agents for the menu's Agent submenu (DESIGN §9.5). Optional; never written by Poppy.
+    var agents: [AgentProfile]?
 
     init(command: String = Config.defaultCommand, cwd: String = Config.defaultCwd, hotkey: String = Config.defaultHotkey) {
         self.command = command
@@ -33,6 +35,16 @@ nonisolated struct Config: Codable, Sendable {
         command = try c.decodeIfPresent(String.self, forKey: .command) ?? Self.defaultCommand
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? Self.defaultCwd
         hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? Self.defaultHotkey
+        // A bad "agents" entry must not discard the rest of the file: drop the whole list.
+        do {
+            agents = try c.decodeIfPresent([AgentProfile].self, forKey: .agents)?.filter {
+                !$0.name.trimmingCharacters(in: .whitespaces).isEmpty
+                    && !$0.command.trimmingCharacters(in: .whitespaces).isEmpty
+            }
+        } catch {
+            appLog("config.json \"agents\" is invalid, ignoring it: \(error)")
+            agents = nil
+        }
     }
 
     /// Loads config.json (writing defaults if missing), then applies the
@@ -68,33 +80,38 @@ nonisolated struct Config: Codable, Sendable {
         return config
     }
 
-    /// Writes only the "hotkey" key into config.json, keeping every other key and
-    /// value as the user wrote them (DESIGN §8.1). Refuses to touch a file that
-    /// doesn't parse as a JSON object. Returns false on failure.
+    /// Saves "hotkey" (DESIGN §8.1).
     static func saveHotkey(_ spec: String) -> Bool {
+        saveValue(spec, forKey: "hotkey")
+    }
+
+    /// Writes only `key` into config.json, keeping every other key and value as the
+    /// user wrote them (DESIGN §8.1). Refuses to touch a file that doesn't parse as a
+    /// JSON object. Returns false on failure.
+    static func saveValue(_ value: String, forKey key: String) -> Bool {
         let url = ConfigPaths.config
         var object: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: url.path) {
             do {
                 guard let parsed = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
-                    appLog("config.json is not a JSON object; hotkey not saved")
+                    appLog("config.json is not a JSON object; \(key) not saved")
                     return false
                 }
                 object = parsed
             } catch {
-                appLog("config.json could not be read; hotkey not saved: \(error)")
+                appLog("config.json could not be read; \(key) not saved: \(error)")
                 return false
             }
         }
-        object["hotkey"] = spec
+        object[key] = value
         do {
             let data = try JSONSerialization.data(withJSONObject: object,
                                                   options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
             try ConfigPaths.write(data, to: url)
-            appLog("saved hotkey \(spec) to \(url.path)")
+            appLog("saved \(key) \(value) to \(url.path)")
             return true
         } catch {
-            appLog("could not save hotkey: \(error)")
+            appLog("could not save \(key): \(error)")
             return false
         }
     }

@@ -3,7 +3,8 @@ import AppKit
 
 /// Owns the terminal view and its child process for the app's lifetime (DESIGN §9).
 final class TerminalSession {
-    private let spec: LaunchSpec
+    private var config: Config
+    private var spec: LaunchSpec
     private weak var host: NSView?
     private var currentView: PoppyTerminalView?
 
@@ -16,8 +17,22 @@ final class TerminalSession {
     var focusView: NSView? { currentView }
 
     init(config: Config) {
+        self.config = config
         spec = ShellEnvironment.launchSpec(for: config)
+        logSpec()
+    }
+
+    private func logSpec() {
         appLog("agent: \(spec.executable) \(spec.args.joined(separator: " ")) in \(spec.currentDirectory)")
+    }
+
+    /// Ends the current agent and starts `command` in a fresh terminal (DESIGN §9.5).
+    /// No conversation is carried over.
+    func switchCommand(to command: String) {
+        config.command = command
+        spec = ShellEnvironment.launchSpec(for: config)
+        logSpec()
+        restart()
     }
 
     /// Adds the terminal to `host` (which has a fixed size) and starts the agent.

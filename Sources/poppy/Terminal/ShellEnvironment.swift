@@ -22,6 +22,19 @@ nonisolated enum ShellEnvironment {
         )
     }
 
+    /// Same shell, flags and environment as the agent, running `script` instead
+    /// (used to check which agent CLIs are installed, DESIGN §9.5).
+    static func probeSpec(script: String) -> LaunchSpec {
+        let env = ProcessInfo.processInfo.environment
+        let executable = resolveShell(env["SHELL"])
+        return LaunchSpec(
+            executable: executable,
+            args: ["-l", "-i", "-c", script],
+            environment: childEnvironment(from: env, shell: executable),
+            currentDirectory: NSHomeDirectory()
+        )
+    }
+
     private static func resolveShell(_ shell: String?) -> String {
         if let shell, shell.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: shell) {
             return shell

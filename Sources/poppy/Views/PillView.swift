@@ -5,6 +5,7 @@ final class PillView: NSView {
     weak var controller: PanelController?
 
     private var drag = WindowDrag()
+    private let logo = NSImageView()
 
     static let logoSize: CGFloat = 24
 
@@ -12,7 +13,6 @@ final class PillView: NSView {
     init(frame: NSRect, harness: Harness, title: String) {
         super.init(frame: frame)
 
-        let logo = NSImageView(image: HarnessLogo.image(for: harness, points: Self.logoSize))
         logo.imageScaling = .scaleProportionallyUpOrDown
         logo.contentTintColor = .labelColor  // black in light mode, white in dark
         logo.translatesAutoresizingMaskIntoConstraints = false
@@ -23,10 +23,16 @@ final class PillView: NSView {
             logo.widthAnchor.constraint(equalToConstant: Self.logoSize),
             logo.heightAnchor.constraint(equalToConstant: Self.logoSize),
         ])
-        let label = harness == .other ? title : harness.displayName
-        toolTip = label
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
+        update(harness: harness, title: title)
+    }
+
+    /// Shows `harness`'s logo; also called when the agent is switched (DESIGN §9.5).
+    func update(harness: Harness, title: String) {
+        logo.image = HarnessLogo.image(for: harness, points: Self.logoSize)
+        let label = harness == .other ? title : harness.displayName
+        toolTip = label
         setAccessibilityLabel(label)
     }
 
