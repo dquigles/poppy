@@ -48,10 +48,11 @@ final class TerminalSession {
         appLog("agent: \(spec.executable) \(spec.args.joined(separator: " ")) in \(spec.currentDirectory)")
     }
 
-    /// Ends the current agent and starts `command` in a fresh terminal (DESIGN §9.5).
-    /// No conversation is carried over.
-    func switchCommand(to command: String) {
+    /// Ends the current agent and starts `command` in `directory`: one restart for an
+    /// agent switch, a directory change, or both (DESIGN §9.5, §9.8, §9.9).
+    func switchTo(command: String, directory: String) {
         config.command = command
+        config.cwd = directory
         restart()  // recomputes the spec
     }
 

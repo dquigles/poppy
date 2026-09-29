@@ -66,11 +66,14 @@ final class HeaderView: NSView {
         label.stringValue = title
         label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingMiddle  // long directories (DESIGN §9.8)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 16),
         ])
     }
 
@@ -78,6 +81,11 @@ final class HeaderView: NSView {
 
     func setTitle(_ title: String) {
         label.stringValue = title
+    }
+
+    /// The full directory, shown on hover (DESIGN §7.9).
+    func setPath(_ path: String) {
+        toolTip = path
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

@@ -3,7 +3,7 @@
 // re-run this after editing any SVG.
 // Usage: swift scripts/render-logos.swift   (works from any directory)
 //
-// The harness SVGs (all but poppy.svg, which is Poppy's own) are lobehub/lobe-icons
+// The harness SVGs (all but poppy.svg and poppy-menubar.svg, which are Poppy's own) are lobehub/lobe-icons
 // mono marks (MIT License, Copyright (c) 2023 LobeHub; see src/LICENSE-lobe-icons)
 // with packed arc flags ("01") expanded ("0 1"), since CoreSVG can't parse the packed form.
 import AppKit

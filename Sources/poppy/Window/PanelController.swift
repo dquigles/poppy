@@ -1,5 +1,10 @@
 import AppKit
 
+/// Shared with the `poppy` command's `--pill` (DESIGN §7.14, §9.9).
+nonisolated enum PanelSizes {
+    static let pillPresets: [(name: String, diameter: CGFloat)] = [("Small", 36), ("Medium", 44), ("Large", 56)]
+}
+
 /// Owns the panel and its views: state machine, frames, animation, observers,
 /// Poppy menu (DESIGN §5–7).
 final class PanelController: NSObject {
@@ -12,7 +17,7 @@ final class PanelController: NSObject {
     }
 
     /// Pill diameter presets, in the Pill Size menu (DESIGN §7.14).
-    static let pillPresets: [(name: String, diameter: CGFloat)] = [("Small", 36), ("Medium", 44), ("Large", 56)]
+    static let pillPresets = PanelSizes.pillPresets
     static let defaultPillDiameter: CGFloat = 44
     static let expandedCornerRadius: CGFloat = 20
     static let margin: CGFloat = 16
@@ -25,6 +30,17 @@ final class PanelController: NSObject {
     private let agents: AgentCatalog
     /// The running agent's subscription usage (DESIGN §9.7).
     private let usage: UsageMonitor
+    /// The agent's working directory (absolute) and recent ones, newest first (DESIGN §9.8).
+    private var workingDirectory: String
+    private var recentDirectories: [String]
+    static let maxRecentDirectories = 8
+    /// The working directory's name ("~" for home), DESIGN §7.9.
+    private var headerTitle: String { Self.directoryName(workingDirectory) }
+
+    static func directoryName(_ path: String) -> String {
+        let short = Config.abbreviate(path)
+        return short == "~" || short == "/" ? short : (path as NSString).lastPathComponent
+    }
     /// The profiles in the menu as last built; menu items refer to them by `tag`.
     private var menuAgents: [AgentProfile] = []
     private let session: TerminalSession?
@@ -69,6 +85,8 @@ final class PanelController: NSObject {
         usage = UsageMonitor(command: config.command, enabled: config.showUsage)
         self.session = session
         let saved = PanelState.load()
+        workingDirectory = Config.normalize(config.resolvedWorkingDirectory)
+        recentDirectories = saved.recentDirectories ?? []
         if let diameter = saved.pillDiameter.map({ CGFloat($0) }),
            Self.pillPresets.contains(where: { $0.diameter == diameter }) {
             pillDiameter = diameter
@@ -88,7 +106,8 @@ final class PanelController: NSObject {
         pillView = PillView(frame: glass.contentView.bounds, harness: Harness(command: config.command),
                             title: config.pillTitle)
         pillView.autoresizingMask = [.width, .height]
-        expandedView = ExpandedView(title: config.pillTitle, size: expandedSize)
+        expandedView = ExpandedView(title: Self.directoryName(workingDirectory), size: expandedSize)
+        expandedView.header.setPath(Config.abbreviate(workingDirectory))
         expandedView.isHidden = true
         expandedView.alphaValue = 0
         super.init()
@@ -559,7 +578,8 @@ final class PanelController: NSObject {
     private func saveState() {
         PanelState(pillOrigin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY),
                    pillDiameter: pillDiameter,
-                   expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height)).save()
+                   expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height),
+                   recentDirectories: recentDirectories).save()
     }
 
     // MARK: - Poppy menu (DESIGN §7.10)
@@ -586,6 +606,11 @@ final class PanelController: NSObject {
         agentItem.submenu = makeAgentMenu()
         agentItem.isEnabled = session != nil
         menu.addItem(agentItem)
+
+        let directoryItem = NSMenuItem(title: "Working Directory", action: nil, keyEquivalent: "")
+        directoryItem.submenu = makeDirectoryMenu()
+        directoryItem.isEnabled = session != nil
+        menu.addItem(directoryItem)
 
         // One line for both: "Set Hotkey (⌃⌥Space)", or just "Set Hotkey" when none is registered.
         var setTitle = "Set Hotkey"
@@ -671,39 +696,168 @@ final class PanelController: NSObject {
         return submenu
     }
 
+    /// Recent directories (the current one checked), then Choose Folder… (DESIGN §9.8).
+    private func makeDirectoryMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        var paths = [workingDirectory] + recentDirectories.filter { $0 != workingDirectory }
+        paths = paths.filter { Self.isDirectory($0) }
+        for path in paths.prefix(Self.maxRecentDirectories) {
+            let item = NSMenuItem(title: Config.abbreviate(path), action: #selector(selectDirectory(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = path
+            item.state = path == workingDirectory ? .on : .off
+            let icon = NSWorkspace.shared.icon(forFile: path)
+            icon.size = NSSize(width: 16, height: 16)
+            item.image = icon
+            submenu.addItem(item)
+        }
+        submenu.addItem(.separator())
+        let choose = NSMenuItem(title: "Choose Folder…", action: #selector(chooseFolder), keyEquivalent: "")
+        choose.target = self
+        submenu.addItem(choose)
+        return submenu
+    }
+
+    @objc private func selectDirectory(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        openDirectory(path, show: false)
+    }
+
+    /// The system folder picker. Poppy is activated only while it's open (it can't take
+    /// keyboard input otherwise), then the previous app is activated again (DESIGN §9.8).
+    @objc private func chooseFolder() {
+        let previous = NSWorkspace.shared.frontmostApplication
+        let picker = NSOpenPanel()
+        picker.canChooseDirectories = true
+        picker.canChooseFiles = false
+        picker.allowsMultipleSelection = false
+        picker.canCreateDirectories = true
+        picker.prompt = "Open"
+        picker.message = "Choose the agent's working directory"
+        picker.directoryURL = URL(fileURLWithPath: workingDirectory)
+        // Over a fullscreen app, open on its Space instead of switching away from it.
+        picker.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+        picker.level = .statusBar + 1  // above the expanded panel
+        NSApp.activate()
+        picker.begin { [weak self] response in
+            MainActor.assumeIsolated {
+                if let previous, previous != NSRunningApplication.current {
+                    NSApp.yieldActivation(to: previous)
+                    previous.activate()
+                }
+                guard response == .OK, let url = picker.url else { return }
+                self?.openDirectory(url.path, show: true)
+            }
+        }
+    }
+
+    /// A directory from the menu or the folder picker (DESIGN §9.8).
+    func openDirectory(_ path: String, show: Bool) {
+        apply(LaunchRequest(directory: path, show: show))
+    }
+
+    /// Applies a request from the `poppy` command or a folder handed to Poppy (DESIGN §9.9):
+    /// settings first, then the agent and directory with at most one restart, then (if
+    /// `show`) expands and focuses the panel. Everything is saved like the menu's changes.
+    func apply(_ request: LaunchRequest) {
+        // Only the presets, whoever wrote the request (DESIGN §7.14).
+        if let diameter = request.pillDiameter.map({ CGFloat($0) }),
+           Self.pillPresets.contains(where: { $0.diameter == diameter }) {
+            setPillDiameter(diameter)
+        }
+        for (key, value) in [("autoOpenOnInput", request.autoOpenOnInput), ("autoOpenOnDone", request.autoOpenOnDone),
+                             ("autoOpenFocus", request.autoOpenFocus)] {
+            if let value { setAutoOpen(key, value) }
+        }
+        if let showUsage = request.showUsage, showUsage != config.showUsage {
+            toggleShowUsage()
+        }
+
+        var directory = workingDirectory
+        if let requested = request.directory {
+            let path = Config.normalize(requested)
+            if Self.isDirectory(path) {
+                directory = path
+                recentDirectories = Array(([path] + recentDirectories.filter { $0 != path })
+                    .prefix(Self.maxRecentDirectories))
+                saveState()
+            } else {
+                appLog("working directory \(path) is not a directory; ignored")
+            }
+        }
+        changeAgent(command: request.command ?? config.command, directory: directory)
+
+        guard request.show, !isAnimating else { return }
+        if state == .collapsed {
+            expand()
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+            if let focusTarget { panel.makeFirstResponder(focusTarget) }
+        }
+    }
+
+    /// Runs `command` in `directory`: one restart if either changed, none otherwise; both
+    /// are saved (`command`, `cwd`) for the next launch (DESIGN §9.5, §9.8).
+    private func changeAgent(command: String, directory: String) {
+        let commandChanged = !AgentCatalog.same(command, config.command)
+        let directoryChanged = directory != workingDirectory
+        guard commandChanged || directoryChanged, let session else { return }
+        if commandChanged {
+            appLog("agent: \(command)")
+            config.command = command
+            pillView.update(harness: Harness(command: command), title: config.pillTitle)
+            _ = Config.saveValue(command, forKey: "command")
+        }
+        if directoryChanged {
+            appLog("working directory: \(directory)")
+            // Keep the one being left in the recents too (e.g. the one Poppy launched in).
+            if !recentDirectories.contains(workingDirectory) {
+                recentDirectories = Array(([directory, workingDirectory]
+                    + recentDirectories.filter { $0 != directory }).prefix(Self.maxRecentDirectories))
+                saveState()
+            }
+            workingDirectory = directory
+            config.cwd = Config.abbreviate(directory)
+            expandedView.header.setTitle(headerTitle)
+            expandedView.header.setPath(config.cwd)
+            _ = Config.saveValue(config.cwd, forKey: "cwd")
+        }
+        session.switchTo(command: config.command, directory: config.cwd)
+        if commandChanged { usage.setCommand(command) }
+    }
+
+    private static func isDirectory(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
     @objc private func selectAgent(_ sender: NSMenuItem) {
         guard menuAgents.indices.contains(sender.tag) else { return }
         switchAgent(to: menuAgents[sender.tag])
     }
 
-    /// Starts `profile` in a fresh terminal, updates the logo and title, and saves it as
-    /// the command for the next launch (DESIGN §9.5). Picking the running agent does nothing.
+    /// Starts `profile` in a fresh terminal, updates the logo, and saves it as the command
+    /// for the next launch (DESIGN §9.5). Picking the running agent does nothing.
     private func switchAgent(to profile: AgentProfile) {
-        guard let session, !AgentCatalog.same(profile.command, config.command) else { return }
+        guard session != nil, !AgentCatalog.same(profile.command, config.command) else { return }
         appLog("switching agent to \(profile.name)")
-        config.command = profile.command
-        session.switchCommand(to: profile.command)
-        pillView.update(harness: Harness(command: config.command), title: config.pillTitle)
-        expandedView.header.setTitle(config.pillTitle)
-        usage.setCommand(profile.command)
-        _ = Config.saveValue(profile.command, forKey: "command")
+        changeAgent(command: profile.command, directory: workingDirectory)
     }
 
     @objc private func toggleAutoOpen(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String else { return }
-        let on: Bool
+        setAutoOpen(key, sender.state != .on)
+    }
+
+    /// Sets and saves one Auto-Open flag (DESIGN §7.15).
+    private func setAutoOpen(_ key: String, _ on: Bool) {
         switch key {
-        case "autoOpenOnInput":
-            config.autoOpenOnInput.toggle()
-            on = config.autoOpenOnInput
-        case "autoOpenOnDone":
-            config.autoOpenOnDone.toggle()
-            on = config.autoOpenOnDone
-        case "autoOpenFocus":
-            config.autoOpenFocus.toggle()
-            on = config.autoOpenFocus
-        default:
-            return
+        case "autoOpenOnInput": config.autoOpenOnInput = on
+        case "autoOpenOnDone": config.autoOpenOnDone = on
+        case "autoOpenFocus": config.autoOpenFocus = on
+        default: return
         }
         appLog("auto-open: \(key) = \(on)")
         if !Config.saveValue(on, forKey: key) {

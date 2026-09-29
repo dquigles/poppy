@@ -63,8 +63,9 @@ nonisolated struct Config: Codable, Sendable {
     }
 
     /// Loads config.json (writing defaults if missing), then applies the
-    /// POPPY_COMMAND override and the empty-command fallback.
-    static func load() -> Config {
+    /// POPPY_COMMAND override and the empty-command fallback. `quiet` (the `poppy` shell
+    /// command, DESIGN §9.9) only reads: no defaults file, no log lines.
+    static func load(quiet: Bool = false) -> Config {
         var config = Config()
         let url = ConfigPaths.config
         if FileManager.default.fileExists(atPath: url.path) {
@@ -72,8 +73,11 @@ nonisolated struct Config: Codable, Sendable {
             do {
                 config = try JSONDecoder().decode(Config.self, from: Data(contentsOf: url))
             } catch {
-                appLog("config.json could not be read, using defaults: \(error)")
+                if !quiet { appLog("config.json could not be read, using defaults: \(error)") }
             }
+            if quiet { return config }
+        } else if quiet {
+            return config
         } else {
             do {
                 let encoder = JSONEncoder()
@@ -141,6 +145,20 @@ nonisolated struct Config: Codable, Sendable {
         return (first as NSString).lastPathComponent
     }
 
+    /// One spelling per directory (e.g. /private/tmp and /tmp, "a/../b"), so the same
+    /// folder never counts as a change (DESIGN §9.8).
+    static func normalize(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    /// `path` with the home directory written as "~" (how Poppy saves `cwd`, DESIGN §9.8).
+    static func abbreviate(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~/" + path.dropFirst(home.count + 1) }
+        return path
+    }
+
     /// `cwd` with "~" / "~/" expanded; falls back to home if not an existing directory.
     var resolvedWorkingDirectory: String {
         let home = NSHomeDirectory()
@@ -178,6 +196,8 @@ nonisolated struct PanelState: Codable, Sendable {
     var pillDiameter: Double?
     /// Expanded panel size after a user resize (DESIGN §7.13); nil means the default.
     var expandedSize: SavedSize?
+    /// Working directories, most recent first (DESIGN §9.8); absolute paths.
+    var recentDirectories: [String]?
 
     static func load() -> PanelState {
         guard let data = try? Data(contentsOf: ConfigPaths.state) else { return PanelState() }

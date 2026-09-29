@@ -31,7 +31,9 @@ Poppy is a native macOS utility. A small Liquid Glass "pill" floats in a screen 
 ```
 Package.swift
 Sources/poppy/
-  main.swift                        entry point
+  main.swift                        entry point (or the `poppy` shell command's client, §9.9)
+  App/LaunchRequest.swift           LaunchRequest: changes asked for by the shell command or a folder (§9.9)
+  App/CommandLineClient.swift       `poppy [options] [directory]`: parses flags, hands a request to the app (§9.9)
   Log.swift                         appLog()
   App/AppDelegate.swift             creates and owns everything; quit/cleanup
   Config/Config.swift               Config (config.json) + PanelState (state.json) load/save
@@ -78,8 +80,11 @@ Files are introduced in the milestone that needs them (§13).
 
 ## 4. Entry point and app lifecycle
 
-- `main.swift` is top-level code (main-actor isolated):
+- `main.swift` is top-level code (main-actor isolated). From M16 it first checks whether the first argument is `--cli`; if so it runs the `poppy` shell command's client instead of the app and exits with its status (§9.9):
   ```swift
+  if CommandLine.arguments.dropFirst().first == CommandLineClient.flag {
+      exit(CommandLineClient.run(Array(CommandLine.arguments.dropFirst(2))))
+  }
   let app = NSApplication.shared
   let appDelegate = AppDelegate()      // global strong ref; app.delegate is weak
   app.delegate = appDelegate
@@ -89,12 +94,13 @@ Files are introduced in the milestone that needs them (§13).
 - No `@main` anywhere. No main menu is created.
 - `applicationDidFinishLaunching`:
   1. `appLog("Poppy started (pid N)")`.
-  2. Load the config (§8.1).
+  2. Load the config (§8.1). Delete stale request files (`LaunchRequest.removeStaleFiles()`, M16). If requests from the `poppy` command arrived during launch (`pendingRequests`, §9.9), take `command` and `cwd` from them (the last one wins) and save both, so the agent starts there once.
   3. Create the session (M5+): `TerminalSession(config:)`. This only computes the launch spec; the process starts in `attach(to:)`.
   4. Create the controller. It shows the pill with `orderFrontRegardless()`.
   5. Create the `HotKeyManager` (M10+; §11), which registers the hotkey, and set `controller.hotKeys`.
   6. Create the menu bar item (M8+, §7.12).
-- `NSApp.activate` and `NSRunningApplication.activate` are **never** called.
+  7. Apply the pending requests in order (`controller.apply`, M16, §9.9), then clear them.
+- `NSApp.activate` and `NSRunningApplication.activate` are **never** called, with one exception: Choose Folder… (M16, §9.8) activates Poppy while the folder picker is open and then gives activation back to the previous app.
 - `applicationWillTerminate`: `session?.terminateChild()` (§9.4).
 - Quitting: the Poppy menu's Quit (context menu or menu bar item, §7.10) calls `NSApp.terminate(nil)`. Under `swift run`, Ctrl-C in the launching shell also quits (default SIGINT; no handler).
 
@@ -312,7 +318,7 @@ In `PillView`, ignored while `isAnimating`:
   - On drag end: clamp, recompute `pillFrame` (§7.6), save state.
   - `acceptsFirstMouse` returns `true`. Right-click shows the context menu.
   - Contents:
-    - Centered title label: `pillTitle` (§7.11), 12 pt system font, `secondaryLabelColor`. `setTitle(_:)` changes it on an agent switch (§9.5).
+    - Centered title label: the working directory's **name** (`lastPathComponent`; `~` for home, `/` for root), since M16 (§9.8; the user asked for no agent name, the pill's logo shows it). The header's tooltip (`setPath(_:)`) is the full `~`-abbreviated path. 12 pt system font, `secondaryLabelColor`, truncating in the middle, at least 16 pt from the edges. `setTitle(_:)` changes it on a directory change (§9.8).
     - No buttons (the collapse button was removed in M9; §6.3). `hitTest` returns the header itself for any point inside it, so the title also drags.
 - **`contentHost`** (`NSView`):
   - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left, right and bottom (above the usage footer when it's shown). The gap below the header is 0.
@@ -324,6 +330,7 @@ In `PillView`, ignored while `isAnimating`:
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
 - It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
   - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5). Enabled only if `session != nil`.
+  - **"Working Directory ▸"** (M16): a submenu built by `makeDirectoryMenu()` (§9.8). Enabled only if `session != nil`.
   - **"Pill Size ▸"** (M13): Small / Medium / Large (§7.14).
   - **"Auto-Open ▸"** (M14): "When Input Is Needed" and "When Done", then a separator and "Focus the Panel"; checkmarks from `config.autoOpenOnInput` / `autoOpenOnDone` / `autoOpenFocus`; `toggleAutoOpen(_:)` (key in `representedObject`) flips the flag and saves it with `Config.saveValue(Bool, forKey:)`. Enabled only if there's a session and `config.statusHooks` (§7.15).
   - **"Show Usage"** (M15): checkmark from `config.showUsage`; `toggleShowUsage` flips it, saves it with `Config.saveValue`, and updates the monitor, footer and ring at once (§9.7).
@@ -340,21 +347,22 @@ In `PillView`, ignored while `isAnimating`:
 - **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the command's first word after any leading `NAME=value` words (M14), lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch, and again by `switchAgent` (§9.5) when the agent changes.
 - **The pill** shows no text, only a centered `NSImageView`, 24×24 pt on the default pill (scaled with the pill size, §7.14), `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)` calls `update(harness:title:)` (also called on an agent switch, §9.5), which sets the logo, and the tooltip and accessibility label to `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
 - **Logos are black-and-white only** (the user's choice in M11: no brand colors). Each is a transparent PNG, black on alpha, used as a template image, so it tints to `labelColor` on the pill (black in light mode, white in dark) and follows the menu bar's appearance.
-- **`HarnessLogo.image(for:points:)`** loads `<name>.png` (`claude`, `codex`, `gemini`, `opencode`; `.other`, i.e. unrecognized CLIs and plain shells, uses `poppy`), sets `size` to `points`×`points`, `isTemplate = true`, `accessibilityDescription = displayName`. `HarnessLogo.poppy(points:)` loads `poppy.png` the same way (description "Poppy"). A file that can't be found logs `logo: <name>.png not found in [...]` and falls back to SF Symbol `terminal` (natural size, template).
+- **`HarnessLogo.image(for:points:)`** loads `<name>.png` (`claude`, `codex`, `gemini`, `opencode`; `.other`, i.e. unrecognized CLIs and plain shells, uses `poppy`), sets `size` to `points`×`points`, `isTemplate = true`, `accessibilityDescription = displayName`. `HarnessLogo.menuBar(points:)` loads `poppy-menubar.png` the same way (description "Poppy"; M16, replacing `poppy(points:)`). A file that can't be found logs `logo: <name>.png not found in [...]` and falls back to SF Symbol `terminal` (natural size, template).
 - **Where the PNGs are loaded from**, first match wins:
   1. `Bundle.main.resourceURL/Logos` (the .app's `Contents/Resources/Logos`, §12);
   2. Debug builds only (`#if DEBUG`): `<repo>/Resources/Logos`, found from `#filePath`, for `swift run` from this checkout. Release builds don't embed the checkout path, and a bundled app missing its Logos folder logs the problem.
 
   SwiftPM resources (`Bundle.module`) are not used: in a .app they'd need a bundle beside `Contents/`, which breaks code signing.
 - **Files:** `Resources/Logos/<name>.png`, 128×128 px RGBA, rendered by `scripts/render-logos.swift` (paths found from `#filePath`, so it runs from anywhere; fails if no SVGs are found) from `Resources/Logos/src/<name>.svg`. The PNGs are committed and `bundle.sh` doesn't re-render them: re-run the script after editing any SVG. The script draws each SVG, then fills black with `.sourceIn` so every covered pixel is pure black at its original alpha.
-- **Poppy's own logo** (`src/poppy.svg`, added by the user in M11): a four-petal flower with a stem and leaf, black on transparent, 24×24 viewBox, designed to stay legible at 18 px. Its arcs already have separated flags.
+- **Poppy's own logo** (`src/poppy.svg`, added by the user in M11): a four-petal flower with a stem and leaf, black on transparent, 24×24 viewBox, designed to stay legible at 18 px. Its arcs already have separated flags. It stays the pill's logo for unrecognized CLIs.
+- **The menu bar mark** (`src/poppy-menubar.svg`, added by the user in M16): the same flower with round petals (four circles and a center circle, all separate), stem and leaf; circles and plain paths only. Used only for the menu bar icon (§7.12).
 - **Sources:** the harness SVGs are the mono marks from lobehub/lobe-icons (`@lobehub/icons-static-svg`, MIT License, Copyright (c) 2023 LobeHub; the same marks platoon vendors). The full license, with a note that the marks remain their owners' trademarks, is `Resources/Logos/src/LICENSE-lobe-icons`, and `bundle.sh` ships it next to the PNGs. CoreSVG can't parse SVG arcs with packed flags (`a14 14 0 01-4 3`, "wrong number of floats"; verified in a scratchpad test), so their path data was normalized to separate the flags (`0 1`). Normalize any new or updated logo the same way before rendering.
 
 - **Usage ring** (M15, §9.7): a `CAShapeLayer` circle just inside the glass edge (inset `lineWidth / 2 + 1.5` pt; `lineWidth` 2.5 pt on the 44 pt pill, scaled with the diameter), starting at 12 o'clock and running clockwise, `strokeEnd` = the **short window's** used fraction, round caps, with **no track** (nothing drawn for the unused part, so it sits directly on the glass) and **no color**: always `labelColor` at 0.75 alpha, never red (the user's choice in M15; the footer meter keeps its red warning). Its CGColor is resolved in `viewDidChangeEffectiveAppearance` inside `performAsCurrentDrawingAppearance` from `labelColor.cgColor.copy(alpha:)`; a stored `withAlphaComponent` color kept the appearance it was first resolved in (the ring stayed white in light mode). The footer's colors are computed on each draw for the same reason. Hidden when there's no current report for the running harness. The tooltip and accessibility label get `" · <used>% of 5h used"` appended (after the status suffix). The logo tint (status) is unaffected.
 
 ### 7.12 Menu bar item (M8; icon M11)
 - `AppDelegate` creates it after the controller: `NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`.
-- `button.image` = `HarnessLogo.poppy(points: 18)` (M11; §7.11): Poppy's own logo, whatever the harness, so the menu bar item is always recognizably Poppy. It's a template, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`. It never shows agent status (only the pill does, §7.15).
+- `button.image` = `HarnessLogo.menuBar(points: 18)` (M11; the round-petal mark since M16; §7.11): Poppy's own logo, whatever the harness, so the menu bar item is always recognizably Poppy. It's a template, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`. It never shows agent status (only the pill does, §7.15).
 - If the image has zero size, `button.title = "P"` and a log line, so the item is never invisible.
 - `statusItem.menu = controller.makeMenu()` (repopulated on each open, §7.10). Clicking the icon shows the menu; no custom click handling.
 - `appLog("status item created")`.
@@ -403,7 +411,7 @@ Driven by status changes (§9.6), in `PanelController.statusChanged(_:)`, which 
 
 The directory is `~/.config/poppy/`, created with intermediate directories if missing. Both types are `nonisolated struct … : Codable, Sendable`.
 
-### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10), `command` (M12), `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus` (M14), and `showUsage` (M15))
+### 8.1 `Config` (`config.json`, user-edited, read at launch only; introduced in M4; Poppy writes only `hotkey` (M10), `command` (M12), `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus` (M14), `showUsage` (M15), and `cwd` (M16))
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
@@ -428,12 +436,12 @@ Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", 
 **Field rules**
 - `POPPY_COMMAND` env var: if set and non-empty, it replaces `command`.
 - If `command` (after the override) is empty or only whitespace: log it and use `claude`.
-- `cwd`:
+- `cwd` (written by a directory change, §9.8, as `Config.abbreviate(path)`: the home directory as `~`):
   - `"~"` becomes the home directory, and a prefix of `"~/"` becomes home + the rest. Nothing else is expanded.
   - If the result isn't an existing directory, log it and use the home directory.
 - `command` is a shell command string (§9.2).
 
-### 8.2 `PanelState` (`state.json`, app-written)
+### 8.2 `PanelState` (`state.json`, app-written; `recentDirectories: [String]?` added in M16, §9.8)
 ```json
 { "pillOrigin": { "x": 1200, "y": 16 }, "pillDiameter": 44, "expandedSize": { "width": 760, "height": 480 } }
 ```
@@ -475,7 +483,7 @@ Callbacks arrive on the main queue.
 
 Each callback returns early if `source !== currentView`.
 
-**`init(config: Config)`** keeps its own copy of `config`, computes the launch spec (executable, args, env, cwd; §9.2) and stores it; `restart()` recomputes it (re-readying the status hooks, §9.6), so `switchCommand(to:)` (§9.5) only sets the command and restarts.
+**`init(config: Config)`** keeps its own copy of `config`, computes the launch spec (executable, args, env, cwd; §9.2) and stores it; `restart()` recomputes it (re-readying the status hooks, §9.6), so `switchTo(command:directory:)` (§9.5, §9.8) only sets the command and directory and restarts.
 
 **`attach(to host: NSView)`**
 - Stores `host` (weak).
@@ -546,10 +554,7 @@ Chosen from the Poppy menu's **Agent ▸** submenu (§7.10). The conversation is
 
 **`switchAgent(to:)`** (`selectAgent` looks the profile up by tag):
 1. Return if there's no session or the profile's command is the running one (use Restart Agent to restart).
-2. `config.command = profile.command` (`PanelController.config` is a `var`).
-3. `session.switchCommand(to:)`: sets its own `config.command`, recomputes the `LaunchSpec`, logs it, then `restart()` (§9.3), which ends the old agent, starts a new view and refocuses it if expanded.
-4. `pillView.update(harness:title:)` (new logo, tooltip and accessibility label) and `expandedView.header.setTitle(config.pillTitle)`.
-5. `Config.saveValue(profile.command, forKey: "command")`, so the next launch starts it. (A `POPPY_COMMAND` env var still overrides it at launch.)
+2. `changeAgent(command: profile.command, directory: workingDirectory)` (M16, §9.8): `config.command = …` (`PanelController.config` is a `var`), `pillView.update(harness:title:)` (new logo, tooltip and accessibility label), `Config.saveValue(command, forKey: "command")` (so the next launch starts it; a `POPPY_COMMAND` env var still overrides it at launch), then `session.switchTo(command:directory:)`: sets its own `config.command`/`cwd`, then `restart()` (§9.3), which recomputes and logs the `LaunchSpec`, ends the old agent, starts a new view and refocuses it if expanded; then `usage.setCommand` (§9.7). (Before M16: `session.switchCommand(to:)` and the header showed `pillTitle`.)
 
 ### 9.6 Agent status hooks (M14)
 Modeled on platoon's status feed and claude-popup's hooks. **`AgentStatus`** (`Terminal/AgentStatus.swift`): `idle`, `working`, `waiting` (blocked, needs the user), `done` (finished a turn). `tint` (pill logo only): nil (normal), `.systemBlue`, `.systemOrange`, `.systemGreen`.
@@ -591,6 +596,37 @@ Modeled on platoon (`usage.rs`, `codex_usage.rs`, `UsageFooter.tsx`). Shows how 
 - Per-source cache, keyed by harness and `executablePrefix(command)` (so Codex profiles with different `CODEX_HOME`s don't share numbers): last good report, `nextAllowed`, `inFlight`, `backoff`, last failure reason. Switching back to a harness shows its cached report at once if not stale.
 - `refresh(trigger:)`: nothing if disabled, unsupported, in flight, or before `nextAllowed`. `.poll` (a 60 s `Timer` in `.common` modes) fetches only if there's no report, it's stale, or it's ≥ 5 min old; `.event` (expand, agent switch, a turn ending = status `.done`, turning Show Usage on) fetches regardless of age. After a success `nextAllowed` = now + 2 min (Claude; the endpoint is rate-limited) / 1 min (Codex); after a 429, now + backoff (10 min, doubling to 30 min, reset by a success); after `keychainDenied`, never (until Show Usage is toggled); after another failure, now + 5 min. Failures keep showing the last report until it goes stale; with none, the reason is shown.
 - Every timer tick also re-publishes (so countdowns and staleness update each minute). Results for a harness that's no longer current update the cache only. Logs `usage: <harness> 5h 12% 7d 47%` or `usage: <harness> failed: <reason>` (never the token).
+
+### 9.8 Working directory (M16)
+The agent's working directory is `config.cwd` (§8.1). `PanelController` keeps it as `workingDirectory` (absolute, `Config.normalize`d: `standardizedFileURL.path`, so `/private/tmp` and `/tmp`, or `a/../b`, are one directory) and `recentDirectories` (absolute, newest first, at most 8, saved in `state.json`).
+
+**`openDirectory(_ path:show:)`** (the menu and the picker) is `apply(LaunchRequest(directory: path, show: show))` (§9.9): a nonexistent directory is logged and ignored; otherwise it moves to the front of the recents (state saved), and if it differs from `workingDirectory` the agent is restarted there (`changeAgent(command:directory:)`: sets `workingDirectory`, `config.cwd = Config.abbreviate(path)`, the header title and path, saves `cwd`, and calls `session.switchTo(command:directory:)`, one `restart()`, no conversation carried over). The same directory never restarts the agent. Then, if `show` and not animating: collapsed → `expand()` (focused); expanded → make key and focus the terminal. Agent switches (§9.5) go through `changeAgent` too.
+
+**Menu** (`makeDirectoryMenu()`): the current directory, then the recents (skipping ones that no longer exist), up to 8, each titled with its `~`-abbreviated path and the folder's Finder icon (16 pt); the current one is checked. Picking one calls `openDirectory(path, show: false)`. Then a separator and **"Choose Folder…"**: an `NSOpenPanel` (directories only, can create folders, prompt "Open", starting in the current directory, `level = .statusBar + 1`, `collectionBehavior` plus `.moveToActiveSpace` and `.fullScreenAuxiliary` so it opens over a fullscreen app's Space). This is the **one place Poppy activates itself** (a picker can't take keyboard input otherwise): it remembers `NSWorkspace.frontmostApplication`, calls `NSApp.activate()`, runs the picker non-modally (`begin`), and when it closes yields activation back to that app and activates it; on OK, `openDirectory(url.path, show: true)`.
+
+Folders opened with Poppy some other way (`open -a Poppy <dir>`, Finder's Open With, another app) are **ignored** and logged (review fix): any app could otherwise silently restart the agent in a folder of its choosing, whose project config (hooks, plugins) the agent would load. Only the `poppy` command's request files are accepted (§9.9), and Info.plist declares no document types (an earlier M16 draft declared `public.folder`; `open -a` delivers the request files without it, verified).
+
+When the directory changes, the one being left is also kept in the recents (review fix), so the directory Poppy launched in can be picked again.
+
+### 9.9 The `poppy` shell command (M16)
+`poppy [options] [directory]` in a terminal opens Poppy with the agent in that directory (default: the shell's current directory), launching it if needed. It's a function in `~/.zshrc` (added for the user in M16):
+```zsh
+poppy() { "${POPPY_APP:-$HOME/Documents/poppy/build/Poppy.app}/Contents/MacOS/poppy" --cli "$@"; }
+```
+**Client** (`CommandLineClient`, `nonisolated`): `main.swift` checks for `--cli` before creating `NSApplication` and, if present, runs `CommandLineClient.run(<the arguments after it>)` and `exit`s with its status; no app, window or menu bar item. It:
+1. Parses the options (help text in `CommandLineClient.usage`): `-a/--agent NAME` (a built-in agent by name or command word, `claude`, `codex`, `gemini`, `opencode`, or a `config.json` agent by name, case-insensitive; unknown → error listing the names), `-c/--command CMD` (any command), `--pill small|medium|large`, `--auto-open input|done|both|off` (sets both flags), `--focus`/`--no-focus`, `--usage`/`--no-usage`, `-b/--background` (don't expand), `-h/--help`, and at most one directory (relative to the shell's cwd; must exist). Errors go to stderr as `poppy: …` plus a hint, exit 2. `Config.load(quiet: true)` reads `agents` without writing defaults or logging.
+2. Requires running inside the bundle (`Bundle.main.bundleURL` ends in `.app`; `swift run` isn't registered with LaunchServices).
+3. Writes the `LaunchRequest` as JSON to `~/.config/poppy/run/request-<UUID>.json` (directory 0700, file 0600).
+4. Runs `/usr/bin/open -g -a <this bundle> <file>` (`-g`: Poppy isn't brought forward; launched if not running).
+5. Waits up to 5 s for Poppy to delete the file (it does when it reads it); if it's still there, **withdraws** it (deletes it, so it can't take effect later, after the user has moved on; review fix), says `poppy: Poppy didn't pick up the request within 5 s; nothing was changed. Try again.` and exits 1. (In testing, one request right after rebuilding wasn't picked up and couldn't be reproduced; this makes such a case visible and harmless.)
+
+**Why a file, not a `poppy://` URL:** a registered URL scheme could be opened by any web page, and a request can carry a command to run. A request file in the user's own `~/.config/poppy/run/` can only come from something that can already write Poppy's config (and so set `command` anyway).
+
+**`LaunchRequest`** (`nonisolated struct`, Codable): `directory`, `command`, `pillDiameter`, `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus`, `showUsage` (all optional: nil = leave as is), `show` (default true). The app accepts a request file only if it's directly in `run/` (compared with symlinks resolved on both sides, for a symlinked `~/.config`; review fix), named `request-*.json` (`isRequestFile`); `consume` reads and deletes it (an invalid one is logged and deleted). At launch, request files older than 5 min are deleted.
+
+**App side:**
+- `AppDelegate.application(_:open:)`: each request file is consumed; anything else is ignored and logged (§9.8). Logs `open request: <dir>[, agent <command>]`. If the controller exists, `controller.apply(request)`; otherwise (the open event arrives before `applicationDidFinishLaunching` when it launched Poppy, verified) it's appended to `pendingRequests`: launch then sets `config.command` and `config.cwd` from them (§4) before creating the session, so the agent starts once, in the right place, and then `apply`s each in order.
+- **`PanelController.apply(_:)`**: settings first, each through the same code as its menu item and saved the same way (`setPillDiameter`, only for a preset diameter whoever wrote the request (review fix), `setAutoOpen(key, value)`, `toggleShowUsage` if different); then the directory (validated, added to the recents) and command together through `changeAgent(command:directory:)`, **at most one restart**; then `show` expands or focuses the panel as in §9.8.
 
 ## 10. Liquid Glass (`GlassBackgroundView`)
 
@@ -737,6 +773,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M13 | Expanded panel resizable by edges/corners, terminal reflows while dragging (coalesced, ~20/s) and on release (§7.13); pill size presets Small/Medium/Large in the menu (§7.14); `PanelState.pillDiameter`/`expandedSize` (§8.2) | — |
 | M14 | `Terminal/AgentStatus.swift`; status file + polling in `TerminalSession`; hooks for Claude (`--settings`), Codex, Gemini, opencode; pill tint; Auto-Open menu and `GlassPanel` key guard; config flags (§9.6, §7.15, §8.1) | — |
 | M15 | `Usage/*`, `Terminal/ChildProcess.swift` (probe refactored onto it), `Views/UsageBar.swift`; usage footer in the expanded view, usage ring on the pill, Show Usage menu item, `showUsage` flag (§9.7, §7.9, §7.10, §7.11, §8.1) | — |
+| M16 | Working Directory menu (recents, Choose Folder…), `apply`/`changeAgent`, `TerminalSession.switchTo(command:directory:)` (replacing `switchCommand`), header title = directory name, `PanelState.recentDirectories`, open-documents handling and the `public.folder` document type (Info.plist); `App/LaunchRequest.swift`, `App/CommandLineClient.swift`, the `--cli` branch in `main.swift`, the `poppy` shell function with flags; the round-petal menu bar icon `poppy-menubar` (§9.8, §9.9, §7.9, §7.10, §7.11, §7.12, §8) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -764,3 +801,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 15. Whether system edge/corner resizing works on the non-activating titled panel (cursors, all edges, over fullscreen apps), whether the terminal reflows smoothly while dragging without garbling the agent's display, and whether the smaller and larger pills keep a good glass rim: M13.
 16. Whether each agent's hooks fire as mapped (Claude via `--settings`, Codex after approving the new hooks, Gemini, opencode's `chat.message`/`permission.ask` hook names), whether Codex's PostToolUse and Gemini's AfterTool report working after an approval, whether Codex/Gemini need hooks switched on in their settings, whether opencode's plugin directory is `plugins/` (not the older `plugin/`), and whether auto-open steals focus acceptably (key guard) and collapses back after answering: M14.
 17. Whether the Keychain read via `/usr/bin/security` works without a prompt (or after one "Always Allow") in both the unbundled and bundled app; whether the undocumented Claude usage endpoint keeps answering at this cadence without 429s; whether `codex app-server` answers through the login shell within the timeout; whether the ring reads well on the glass at all three pill sizes: M15.
+18. Whether Choose Folder…'s open panel appears over a fullscreen app's Space and takes typing, and whether activation goes back to the previous app afterward (fullscreen included); whether `open -g -a <bundle> <file>` routes to the running bundled app without bringing it forward (verified from a script: Obsidian stayed frontmost), and whether the client's request is always picked up (once, right after a rebuild, it wasn't; not reproduced): M16.

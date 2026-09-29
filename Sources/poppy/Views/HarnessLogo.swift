@@ -65,9 +65,10 @@ enum HarnessLogo {
         image(named: fileName(for: harness), points: points, description: harness.displayName)
     }
 
-    /// Poppy's own logo (the menu bar icon, DESIGN §7.12).
-    static func poppy(points: CGFloat) -> NSImage {
-        image(named: "poppy", points: points, description: "Poppy")
+    /// The menu bar icon: Poppy's round-petal mark (DESIGN §7.12; the pill's default logo
+    /// for unrecognized CLIs stays `poppy.png`).
+    static func menuBar(points: CGFloat) -> NSImage {
+        image(named: "poppy-menubar", points: points, description: "Poppy")
     }
 
     /// A missing file falls back to SF Symbol `terminal` (natural size).

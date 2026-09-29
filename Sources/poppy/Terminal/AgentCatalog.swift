@@ -26,7 +26,7 @@ nonisolated struct AgentProfile: Codable, Sendable, Equatable {
 
 /// The agents offered in the menu, and which of their CLIs are installed (DESIGN §9.5).
 final class AgentCatalog {
-    static let builtIns = [
+    nonisolated static let builtIns = [
         AgentProfile(name: "Claude Code", command: "claude"),
         AgentProfile(name: "Codex", command: "codex"),
         AgentProfile(name: "Gemini CLI", command: "gemini"),
