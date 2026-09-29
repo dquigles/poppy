@@ -20,7 +20,7 @@ Poppy is a native macOS utility. A small Liquid Glass "pill" floats in a screen 
 
 ### Concurrency rules
 - These are `nonisolated`:
-  - value types used with Codable (`Config`, `PanelState`), and `HotKeyCombo` with its nested `Key` table
+  - value types used with Codable (`Config`, `PanelState`), `HotKeyCombo` with its nested `Key` table, and `Harness` (§7.11)
   - `appLog` (§4)
   - the Carbon C handler (§11)
 - Code on the main thread that is not statically main-actor (the bodies of `NSAnimationContext` completion handlers, `NotificationCenter` block observers with `queue: .main`, and the Carbon handler) wraps its body in `MainActor.assumeIsolated { … }`. Never capture non-Sendable parameters (raw pointers, `Notification`) inside that closure; extract Sendable values first.
@@ -39,6 +39,7 @@ Sources/poppy/
   Window/PanelController.swift      state machine, frames, animation, observers, Poppy menu (§7.10)
   Views/GlassBackgroundView.swift   NSGlassEffectView / NSVisualEffectView fallback
   Views/PillView.swift              collapsed content: click vs drag, right-click
+  Views/HarnessLogo.swift           Harness detection + logo loading (§7.11)
   Views/ExpandedView.swift          ExpandedView + HeaderView (drag, title) + contentHost
   Terminal/TerminalSession.swift    TerminalSession + PoppyTerminalView
   Terminal/ShellEnvironment.swift   builds executable/args/env for the child
@@ -47,6 +48,8 @@ Sources/poppy/
   Hotkey/HotKeyManager.swift        owns the hotkey, current combo and recorder (§11)
   Hotkey/HotKeyRecorder.swift       "Set Hotkey" window (§11.2)
 Resources/Info.plist                used only by scripts/bundle.sh (not a SwiftPM resource)
+Resources/Logos/*.png               harness + Poppy logos, black on transparent (§7.11); src/*.svg are their sources, src/LICENSE-lobe-icons their license
+scripts/render-logos.swift          renders Resources/Logos/src/*.svg to the PNGs
 scripts/bundle.sh                   builds build/Poppy.app
 docs/DESIGN.md, docs/PROGRESS.md
 ```
@@ -191,7 +194,7 @@ There is no collapse button; the panel collapses on a click outside it, or with 
 ### 7.1 Sizes
 | | Size | Corner radius |
 |---|---|---|
-| Collapsed pill | 168 × 44 pt | 22 |
+| Collapsed pill | 44 × 44 pt (a circle; 168 × 44 before M11) | 22 |
 | Expanded panel | 760 × 480 pt | 20 |
 
 The screen margin is 16 pt from `visibleFrame`.
@@ -208,7 +211,7 @@ Screens are compared by `deviceDescription[NSDeviceDescriptionKey("NSScreenNumbe
 `screenWithMouse()` = the first screen where `NSMouseInRect(NSEvent.mouseLocation, screen.frame, false)`, else `NSScreen.main`.
 
 ### 7.3 Default position
-Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − 168, minY + 16)`. At launch the screen is `NSScreen.main`.
+Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − pillWidth, minY + 16)`, with `pillWidth` = 44. At launch the screen is `NSScreen.main`.
 
 ### 7.4 Clamping
 `clamp(frame, in screen)` shifts the frame so it lies inside `visibleFrame.insetBy(dx: 8, dy: 8)`. Frames are never shrunk: if a frame is larger than that area, it is aligned to the area's top-left corner (`minX`, `maxY`) and allowed to overflow. This is decided **per axis**: an axis that fits is shifted normally; an axis that overflows is aligned (x to `minX`, y so that `maxY` matches). The fixed-size `ExpandedView` (§7.7) is therefore never clipped by clamping. It is applied:
@@ -319,17 +322,25 @@ In `PillView`, ignored while `isAnimating`:
 - `menuNeedsUpdate(_:)` calls `populateMenu(_:)` again, so the long-lived menu bar copy is rebuilt each time it opens and never shows stale state.
 - `PanelController.showContextMenu(event:in:)` shows `makeMenu()` with `NSMenu.popUpContextMenu(menu, with: event, for: view)`.
 
-### 7.11 Pill contents
-- `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`).
-- The pill shows a centered horizontal `NSStackView` (spacing 6):
-  - SF Symbol `terminal` (`NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)`)
-  - a label with `pillTitle` (13 pt, medium weight)
-- Both use `labelColor`.
+### 7.11 Pill contents (the harness logo, M11)
+- `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`). From M11 it is used only by the expanded header's title (§7.9).
+- **`Harness`** (`Views/HarnessLogo.swift`, `nonisolated enum`): `.claude`, `.codex`, `.gemini`, `.opencode`, `.other`, from the same first word, lowercased (`claude`, `codex`, `gemini`, `opencode`; anything else, including aliases and wrappers like `npx …`, is `.other`). `displayName`: "Claude Code", "Codex", "Gemini CLI", "opencode", "Poppy". Computed from `config.command` at launch; a later agent-switching feature will change it at runtime.
+- **The pill** shows no text, only a centered `NSImageView`, 24×24 pt, `imageScaling = .scaleProportionallyUpOrDown`, `contentTintColor = .labelColor`, showing `HarnessLogo.image(for: harness, points: 24)`. `PillView.init(frame:harness:title:)`: its tooltip and accessibility label are `displayName`, or `pillTitle` when the harness is `.other` (so `zsh` or `aider` is named, not "Poppy"). It's an accessibility element with role `.button`; `accessibilityPerformPress()` calls `controller.expand()` unless animating.
+- **Logos are black-and-white only** (the user's choice in M11: no brand colors). Each is a transparent PNG, black on alpha, used as a template image, so it tints to `labelColor` on the pill (black in light mode, white in dark) and follows the menu bar's appearance.
+- **`HarnessLogo.image(for:points:)`** loads `<name>.png` (`claude`, `codex`, `gemini`, `opencode`; `.other`, i.e. unrecognized CLIs and plain shells, uses `poppy`), sets `size` to `points`×`points`, `isTemplate = true`, `accessibilityDescription = displayName`. `HarnessLogo.poppy(points:)` loads `poppy.png` the same way (description "Poppy"). A file that can't be found logs `logo: <name>.png not found in [...]` and falls back to SF Symbol `terminal` (natural size, template).
+- **Where the PNGs are loaded from**, first match wins:
+  1. `Bundle.main.resourceURL/Logos` (the .app's `Contents/Resources/Logos`, §12);
+  2. Debug builds only (`#if DEBUG`): `<repo>/Resources/Logos`, found from `#filePath`, for `swift run` from this checkout. Release builds don't embed the checkout path, and a bundled app missing its Logos folder logs the problem.
 
-### 7.12 Menu bar item (M8)
+  SwiftPM resources (`Bundle.module`) are not used: in a .app they'd need a bundle beside `Contents/`, which breaks code signing.
+- **Files:** `Resources/Logos/<name>.png`, 128×128 px RGBA, rendered by `scripts/render-logos.swift` (paths found from `#filePath`, so it runs from anywhere; fails if no SVGs are found) from `Resources/Logos/src/<name>.svg`. The PNGs are committed and `bundle.sh` doesn't re-render them: re-run the script after editing any SVG. The script draws each SVG, then fills black with `.sourceIn` so every covered pixel is pure black at its original alpha.
+- **Poppy's own logo** (`src/poppy.svg`, added by the user in M11): a four-petal flower with a stem and leaf, black on transparent, 24×24 viewBox, designed to stay legible at 18 px. Its arcs already have separated flags.
+- **Sources:** the harness SVGs are the mono marks from lobehub/lobe-icons (`@lobehub/icons-static-svg`, MIT License, Copyright (c) 2023 LobeHub; the same marks platoon vendors). The full license, with a note that the marks remain their owners' trademarks, is `Resources/Logos/src/LICENSE-lobe-icons`, and `bundle.sh` ships it next to the PNGs. CoreSVG can't parse SVG arcs with packed flags (`a14 14 0 01-4 3`, "wrong number of floats"; verified in a scratchpad test), so their path data was normalized to separate the flags (`0 1`). Normalize any new or updated logo the same way before rendering.
+
+### 7.12 Menu bar item (M8; icon M11)
 - `AppDelegate` creates it after the controller: `NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`.
-- `button.image` = SF Symbol `terminal` (`accessibilityDescription: "Poppy"`) with `isTemplate = true`, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`.
-- If the symbol is unavailable, `button.title = "P"` and a log line, so the item is never invisible.
+- `button.image` = `HarnessLogo.poppy(points: 18)` (M11; §7.11): Poppy's own logo, whatever the harness, so the menu bar item is always recognizably Poppy. It's a template, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`.
+- If the image has zero size, `button.title = "P"` and a log line, so the item is never invisible.
 - `statusItem.menu = controller.makeMenu()` (repopulated on each open, §7.10). Clicking the icon shows the menu; no custom click handling.
 - `appLog("status item created")`.
 - The accessory policy is unchanged: no Dock icon, and opening the menu does not activate Poppy.
@@ -376,7 +387,7 @@ The directory is `~/.config/poppy/`, created with intermediate directories if mi
 
   The saved value is always the pill origin (`pillFrame.origin`).
 - **At launch:**
-  - If the file is present and a 168×44 rect at that origin intersects any screen's `visibleFrame`, use it, clamped in `screen(for:)`.
+  - If the file is present and a `pillSize` (44×44) rect at that origin intersects any screen's `visibleFrame`, use it, clamped in `screen(for:)`.
   - Otherwise, use the default position (§7.3).
 - Read and write failures are logged and otherwise ignored.
 
@@ -559,6 +570,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 1. `swift build -c release`.
 2. `rm -rf build/Poppy.app`, then `mkdir -p build/Poppy.app/Contents/{MacOS,Resources}`.
 3. Copy `$(swift build -c release --show-bin-path)/poppy` to `Contents/MacOS/poppy`, and `Resources/Info.plist` to `Contents/Info.plist`.
+   - `mkdir -p Contents/Resources/Logos` and copy `Resources/Logos/*.png` and `Resources/Logos/src/LICENSE-lobe-icons` into it (M11; not the `src` SVGs).
    - SwiftTerm's resource bundle (Metal shaders) is **not** copied. The Metal renderer is not enabled, and SwiftTerm deliberately doesn't use `Bundle.module`.
 4. `codesign --force --deep --sign - build/Poppy.app`.
 5. Print the app path.
@@ -593,6 +605,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M8 | Menu bar item (§7.12); `PanelController.makeMenu()` shared with the context menu (§7.10) | — |
 | M9 | Click outside collapses (§6.3); collapse button removed (§7.9) | — |
 | M10 | `HotKeyCombo` with more keys (§11.1), `HotKeyManager`, register/unregister `GlobalHotKey` (§11), the recorder (§11.2), hotkey shown in the Set Hotkey menu item and the Collapse item removed (§7.10), `Config.saveHotkey` (§8.1) | — |
+| M11 | `Views/HarnessLogo.swift`, `Resources/Logos/` (PNGs + SVG sources), `scripts/render-logos.swift`, logo copy in `bundle.sh`; the pill becomes a 44×44 circle with just the harness logo, unrecognized CLIs show the Poppy logo, and the menu bar icon becomes the Poppy logo (§7.11, §7.12, §12) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -615,3 +628,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 10. The menu bar item's menu doesn't activate Poppy or take key/frontmost from the underlying app, collapsed or expanded: M8.
 11. Whether the global mouse monitor fires for clicks on other apps over fullscreen Spaces, on the desktop, and on other menu bar items, without Accessibility permission, both unbundled and bundled; and that dragging a file from Finder into the expanded terminal doesn't collapse it: M9.
 12. Whether the recorder panel becomes key and receives keys (including ⌘ combos) without activating Poppy, over fullscreen apps too, and whether a changed hotkey takes effect immediately; the recorder can always be dismissed; and keyboard focus returns to the underlying app after it closes over the collapsed pill: M10.
+13. Whether the 44×44 glass circle keeps a good rim and shadow, whether template logos read well on glass in light and dark, and whether the Poppy logo is legible at 18 pt in the menu bar: M11.

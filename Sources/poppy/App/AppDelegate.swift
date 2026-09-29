@@ -29,15 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Menu bar icon that opens Poppy's menu (DESIGN §7.12).
+    /// The icon is Poppy's own logo (whatever the harness), as a template so it follows the menu bar.
     private func makeStatusItem(menu: NSMenu) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Poppy")
-            image?.isTemplate = true
+            let image = HarnessLogo.poppy(points: 18)
             button.image = image
-            if image == nil {
+            if image.size == .zero {
                 button.title = "P"  // never leave an invisible, unclickable item
-                appLog("status item: symbol missing, using text")
+                appLog("status item: logo missing, using text")
             }
             button.toolTip = "Poppy"
         }

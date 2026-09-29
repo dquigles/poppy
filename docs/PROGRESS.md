@@ -21,6 +21,7 @@ Workflow per milestone:
 | M8 | Menu bar item (Restart Agent, Quit) | done |
 | M9 | Click outside collapses; collapse button removed | done |
 | M10 | Customizable hotkey: Set Hotkey recorder, hotkey shown in the menu, more keys | done |
+| M11 | Logos (black-and-white transparent PNGs): logo-only circular pill; Poppy logo in the menu bar and for unrecognized CLIs | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -99,6 +100,8 @@ Workflow per milestone:
   - Review: left clicks now collapse on mouse-up and not when released over the panel, so dragging a file from Finder into the terminal works (re-check in M10's test). Added a "Collapse" menu item as a fallback if the hotkey fails to register. (Removed again in M10 at the user's request; without a hotkey, click outside is the only way to collapse.)
 - M10: customizable hotkey. "Set Hotkey (⌃⌥Space)" in the Poppy menu opens a glass recorder window; the combo is registered live and only `"hotkey"` is written back to config.json. More keys (punctuation, arrows, Return/Tab/Esc/Delete, Home/End/Page, F1–F20). ⇧ alone no longer counts as a modifier. The M9 Collapse menu item was removed at the user's request. Verified by the user; closes risk 12 (and the M9 drag-and-drop re-check).
   - Review: close deferred out of `resignKey`; the recorder closes itself if it never becomes key; after a save-failure the hotkey stays suspended until the recorder closes; a failed restore clears `current`; the terminal is refocused after Esc/save over the expanded panel. Rejected: rejecting duplicate modifiers (`ctrl+ctrl+a`), harmless.
+- M11: the pill is a 44×44 glass circle showing only a logo; logos are black-and-white transparent PNGs (template images) rendered from SVGs by `scripts/render-logos.swift`. Harness marks from lobehub/lobe-icons (MIT); the Poppy flower (user-supplied) is the menu bar icon and the logo for unrecognized CLIs. Colored brand variants were tried first and dropped at the user's request. Verified by the user; closes risk 13.
+  - Review: repo logo path only in debug builds; pill is an accessibility button and names unrecognized CLIs by `pillTitle`; lobe-icons MIT license added and shipped; render script runs from anywhere. Not migrated: a pill saved hugging the right edge under the old 168-pt width comes back 124 pt left of it; one drag re-saves it.
 
 ## Known issues
 - Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.

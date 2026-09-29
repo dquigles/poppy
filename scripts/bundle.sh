@@ -13,6 +13,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$(swift build -c release --show-bin-path)/poppy" "$APP/Contents/MacOS/poppy"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# Harness logos (DESIGN §7.11): the rendered PNGs only, not their SVG sources.
+mkdir -p "$APP/Contents/Resources/Logos"
+cp Resources/Logos/*.png Resources/Logos/src/LICENSE-lobe-icons "$APP/Contents/Resources/Logos/"
 # SwiftTerm's resource bundle (Metal shaders) is intentionally not copied:
 # the Metal renderer is off and SwiftTerm doesn't load it via Bundle.module.
 

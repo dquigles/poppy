@@ -11,7 +11,7 @@ final class PanelController: NSObject {
         var top: Bool
     }
 
-    static let pillSize = NSSize(width: 168, height: 44)
+    static let pillSize = NSSize(width: 44, height: 44)  // a glass circle holding the logo
     static let pillCornerRadius: CGFloat = 22
     static let expandedCornerRadius: CGFloat = 20
     static let margin: CGFloat = 16
@@ -49,7 +49,8 @@ final class PanelController: NSObject {
         glass = GlassBackgroundView(frame: NSRect(origin: .zero, size: Self.pillSize),
                                     cornerRadius: Self.pillCornerRadius)
         glass.autoresizingMask = [.width, .height]
-        pillView = PillView(frame: glass.contentView.bounds, title: config.pillTitle)
+        pillView = PillView(frame: glass.contentView.bounds, harness: Harness(command: config.command),
+                            title: config.pillTitle)
         pillView.autoresizingMask = [.width, .height]
         expandedView = ExpandedView(title: config.pillTitle)
         expandedView.isHidden = true

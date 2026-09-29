@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Poppy">
+  <title>Poppy</title>
+  <!-- Monochrome artwork on a fully transparent canvas. -->
+  <g fill="#000000">
+    <!-- Four rounded petals leave a little air around the center. -->
+    <path d="M11.55 7.1C10.3 4.45 7.96 3.15 5.9 4.12 3.9 5.08 3.43 7.55 4.82 9.42c1.11 1.5 2.82 1.99 4.43 1.53a3.7 3.7 0 0 1 2.3-3.85Z"/>
+    <path d="M12.45 7.1c1.25-2.65 3.59-3.95 5.65-2.98 2 .96 2.47 3.43 1.08 5.3-1.11 1.5-2.82 1.99-4.43 1.53a3.7 3.7 0 0 0-2.3-3.85Z"/>
+    <path d="M8.55 11.56c-2.45-.82-4.77-.15-5.49 1.67-.76 1.94.32 4.03 2.26 4.56 2.05.56 4.14-.68 4.79-2.66a3.67 3.67 0 0 1-1.56-3.57Z"/>
+    <path d="M15.45 11.56c2.45-.82 4.77-.15 5.49 1.67.76 1.94-.32 4.03-2.26 4.56-2.05.56-4.14-.68-4.79-2.66a3.67 3.67 0 0 0 1.56-3.57Z"/>
+    <circle cx="12" cy="11.4" r="3.15"/>
+    <!-- Narrow stem and a single upward leaf remain legible at 18 px. -->
+    <path d="M11.35 14.36h1.3v8.1h-1.3z"/>
+    <path d="M12.4 19.75c1.38-2.14 3.2-2.83 5.27-2.58-.61 2.37-2.42 3.46-5.27 3.58Z"/>
+  </g>
+</svg>

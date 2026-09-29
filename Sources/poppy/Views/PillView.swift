@@ -1,39 +1,46 @@
 import AppKit
 
-/// Collapsed content: icon + title. Click expands, drag moves (DESIGN §7.8, §7.11).
+/// Collapsed content: the harness logo. Click expands, drag moves (DESIGN §7.8, §7.11).
 final class PillView: NSView {
     weak var controller: PanelController?
 
     private var drag = WindowDrag()
 
-    init(frame: NSRect, title: String) {
+    static let logoSize: CGFloat = 24
+
+    /// `title` names the CLI (DESIGN §7.11); it labels the pill when the harness isn't recognized.
+    init(frame: NSRect, harness: Harness, title: String) {
         super.init(frame: frame)
 
-        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        let icon = NSImageView(image: NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)?
-            .withSymbolConfiguration(config) ?? NSImage())
-        icon.contentTintColor = .labelColor
-
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .labelColor
-
-        let stack = NSStackView(views: [icon, label])
-        stack.orientation = .horizontal
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        let logo = NSImageView(image: HarnessLogo.image(for: harness, points: Self.logoSize))
+        logo.imageScaling = .scaleProportionallyUpOrDown
+        logo.contentTintColor = .labelColor  // black in light mode, white in dark
+        logo.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(logo)
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            logo.centerXAnchor.constraint(equalTo: centerXAnchor),
+            logo.centerYAnchor.constraint(equalTo: centerYAnchor),
+            logo.widthAnchor.constraint(equalToConstant: Self.logoSize),
+            logo.heightAnchor.constraint(equalToConstant: Self.logoSize),
         ])
+        let label = harness == .other ? title : harness.displayName
+        toolTip = label
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(label)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let controller, !controller.isAnimating else { return false }
+        controller.expand()
+        return true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The whole pill handles the mouse; the icon and label never swallow clicks.
+    /// The whole pill handles the mouse; the logo never swallows clicks.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
         return self
