@@ -33,6 +33,8 @@ final class PanelController: NSObject {
     private var needsReclamp = false
     private(set) var pillFrame: NSRect
     private var anchor = Anchor(right: true, top: false)
+    /// Global mouse-down monitor, installed only while fully expanded (DESIGN §6.3).
+    private var clickOutsideMonitor: Any?
 
     init(config: Config, session: TerminalSession?) {
         self.config = config
@@ -117,15 +119,17 @@ final class PanelController: NSObject {
             if let focusTarget { panel.makeFirstResponder(focusTarget) }
             fade(expandedView, to: 1) { [weak self] in
                 self?.panel.refreshShadow()
+                self?.installClickOutsideMonitor()
                 self?.finishAnimation()
             }
         }
     }
 
-    @objc func collapse() {
+    func collapse() {
         guard state == .expanded, !isAnimating else { return }
         isAnimating = true
         state = .collapsed
+        removeClickOutsideMonitor()
 
         // Drop key status so the underlying app's window gets keyboard input again.
         panel.makeFirstResponder(nil)
@@ -147,6 +151,32 @@ final class PanelController: NSObject {
                 self?.finishAnimation()
             }
         }
+    }
+
+    // MARK: - Click outside (DESIGN §6.3)
+
+    /// Global monitors see only events delivered to other apps (other windows, the
+    /// desktop, other menu bar items), never clicks on Poppy's own panel or menu bar item.
+    /// Mouse events need no Accessibility permission. Left clicks collapse on mouse-up,
+    /// and not when released over the panel, so dragging a file in from Finder works.
+    private func installClickOutsideMonitor() {
+        guard clickOutsideMonitor == nil else { return }
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseUp, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clickedOutside() }
+        }
+    }
+
+    private func removeClickOutsideMonitor() {
+        if let clickOutsideMonitor { NSEvent.removeMonitor(clickOutsideMonitor) }
+        clickOutsideMonitor = nil
+    }
+
+    private func clickedOutside() {
+        guard state == .expanded, !isAnimating,
+              !NSMouseInRect(NSEvent.mouseLocation, panel.frame, false) else { return }
+        collapse()
     }
 
     private func finishAnimation() {
@@ -291,9 +321,18 @@ final class PanelController: NSObject {
         restart.isEnabled = session != nil
         menu.addItem(restart)
 
+        let collapse = NSMenuItem(title: "Collapse", action: #selector(collapseFromMenu), keyEquivalent: "")
+        collapse.target = self
+        collapse.isEnabled = state == .expanded && !isAnimating
+        menu.addItem(collapse)
+
         let quit = NSMenuItem(title: "Quit Poppy", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
+    }
+
+    @objc private func collapseFromMenu() {
+        collapse()
     }
 
     @objc private func restartAgent() {

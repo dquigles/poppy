@@ -30,13 +30,10 @@ final class ExpandedView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
-/// Drag area with a centered title and a trailing collapse button.
+/// Drag area with a centered title. Clicking outside the panel collapses it (DESIGN §6.3).
 final class HeaderView: NSView {
-    weak var controller: PanelController? {
-        didSet { collapseButton.target = controller }
-    }
+    weak var controller: PanelController?
 
-    private let collapseButton = FirstMouseButton()
     private var drag = WindowDrag()
 
     init(frame: NSRect, title: String) {
@@ -51,26 +48,15 @@ final class HeaderView: NSView {
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-
-        let buttonSize: CGFloat = 20
-        collapseButton.frame = NSRect(x: frame.width - 8 - buttonSize, y: (frame.height - buttonSize) / 2,
-                                      width: buttonSize, height: buttonSize)
-        collapseButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Collapse")
-        collapseButton.imagePosition = .imageOnly
-        collapseButton.isBordered = false
-        collapseButton.contentTintColor = .secondaryLabelColor
-        collapseButton.action = #selector(PanelController.collapse)
-        addSubview(collapseButton)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The button gets its own clicks; everything else (including the title) drags.
+    /// The whole header, including the title, drags.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
-        if let hit = super.hitTest(point), hit === collapseButton { return hit }
         return self
     }
 
@@ -98,9 +84,4 @@ final class HeaderView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         controller?.showContextMenu(event: event, in: self)
     }
-}
-
-/// Button that acts on the first click even when the panel isn't key.
-final class FirstMouseButton: NSButton {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

@@ -19,6 +19,7 @@ Workflow per milestone:
 | M6 | Global hotkey (Carbon) | done |
 | M7 | .app bundling script | done |
 | M8 | Menu bar item (Restart Agent, Quit) | done |
+| M9 | Click outside collapses; collapse button removed | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -92,6 +93,9 @@ Workflow per milestone:
 - M8: menu bar item (template SF Symbol `terminal`) opens the same menu as the pill's right-click, built by one `PanelController.makeMenu()` so future settings land in both.
   - Verified by the user: icon adapts to light/dark, Restart Agent and Quit work, no activation over fullscreen apps, no Dock icon. Closes risk 10.
   - Review: adopted the controller as `NSMenuDelegate` so the long-lived menu bar menu is rebuilt on each open (no stale state once settings exist), a text fallback if the symbol is missing, a creation log line, and DESIGN §3/§4/§14 fixes.
+
+- M9: the collapse button was replaced by click-outside-to-collapse (a global mouse monitor, DESIGN §6.3), at the user's request. Verified by the user; closes risk 11.
+  - Review: left clicks now collapse on mouse-up and not when released over the panel, so dragging a file from Finder into the terminal works (re-check in M10's test). Added a "Collapse" menu item as a fallback if the hotkey fails to register.
 
 ## Known issues
 - Ad-hoc signing (`--sign -`) identifies the app by its build hash, so macOS privacy prompts (e.g. when the agent reads ~/Documents) may come back after each `bundle.sh` rebuild, and old grants pile up in System Settings. Expected; a stable identity would need a real signing certificate.

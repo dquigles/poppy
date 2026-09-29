@@ -39,7 +39,7 @@ Sources/poppy/
   Window/PanelController.swift      state machine, frames, animation, observers, Poppy menu (§7.10)
   Views/GlassBackgroundView.swift   NSGlassEffectView / NSVisualEffectView fallback
   Views/PillView.swift              collapsed content: click vs drag, right-click
-  Views/ExpandedView.swift          ExpandedView + HeaderView (drag, title, collapse button) + contentHost
+  Views/ExpandedView.swift          ExpandedView + HeaderView (drag, title) + contentHost
   Terminal/TerminalSession.swift    TerminalSession + PoppyTerminalView
   Terminal/ShellEnvironment.swift   builds executable/args/env for the child
   Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper + hotkey string parser
@@ -50,12 +50,12 @@ docs/DESIGN.md, docs/PROGRESS.md
 
 Ownership: strong references go downward; back-references are `weak`.
 - `AppDelegate` owns `config: Config`, `session: TerminalSession` (from M5), `controller: PanelController`, `hotKey: GlobalHotKey` (from M6), and `statusItem: NSStatusItem` (from M8; the item is removed from the menu bar when deallocated, so it must be retained).
-- `PanelController` is `final class PanelController: NSObject`; button/menu actions are `@objc` methods.
+- `PanelController` is `final class PanelController: NSObject`; menu actions are `@objc` methods.
 - `PanelController.init(config:session:)` (from M4; M2–M3 use a temporary `init()` with no arguments and a hard-coded title `claude`):
   - It creates and owns the `GlassPanel`, `GlassBackgroundView`, `PillView` and `ExpandedView`.
   - It calls `session.attach(to: expandedView.contentHost)`.
   - `session` is `TerminalSession?`, which is `nil` before M5.
-- `PillView` and `HeaderView` have a `weak var controller: PanelController?`. On right-click they call `controller.showContextMenu(event:in:)`, and the collapse button calls `controller.collapse()`.
+- `PillView` and `HeaderView` have a `weak var controller: PanelController?`. On right-click they call `controller.showContextMenu(event:in:)`.
 - `TerminalSession` owns the current `PoppyTerminalView`.
   - It exposes `var focusView: NSView?`, which is the current terminal view. `PanelController` reads it whenever it needs a first responder.
   - Before M5, `PanelController` uses the placeholder text field instead. The placeholder is created only when `session == nil`, so from M5 on it never exists and `focusTarget` is always the terminal.
@@ -136,7 +136,7 @@ Both are selector-based (`addObserver(self, selector:…)`), so they unregister 
 
 **While `isAnimating`, ignore:**
 - all left-mouse handling in `PillView` / `HeaderView` (click, drag)
-- the collapse button
+- clicks outside the panel (the monitor isn't installed while animating; §6.3)
 - the hotkey
 
 Right-click menus still work.
@@ -155,7 +155,8 @@ Right-click menus still work.
 
   This drops key status so the underlying app's window gets keyboard input again.
   - **Acceptable fallback if M4 shows otherwise:** the user clicks the underlying app to restore typing. Record this as a known issue. Do not call `activate`.
-- Clicking another app while expanded: the panel stays expanded and visible, but not key. Clicking inside it makes it key again (standard non-activating panel behavior).
+- Clicking another app, the desktop or another menu bar item while expanded collapses the panel (§6.3).
+- Switching apps without a click (e.g. ⌘Tab) leaves the panel expanded but not key. Clicking inside it makes it key again, and the hotkey refocuses it (§11).
 
 ### 6.2 Key equivalents
 The app is never active and has no main menu, so menu key equivalents never fire.
@@ -171,6 +172,16 @@ The app is never active and has no main menu, so menu key equivalents never fire
 | `a` | `#selector(NSResponder.selectAll(_:))` |
 
 It returns the result of `sendAction`. Everything else, including Cmd-Q and Cmd-W, goes to `super` (so it is not handled; quitting is via the menu). All non-command keys reach the first responder unchanged, so Esc, Ctrl-C and the rest reach the terminal. SwiftTerm's Mac `TerminalView` implements `open func copy(_:)`, `open func paste(_:)` and `override func selectAll(_:)` (checked in v1.20.0 source).
+
+### 6.3 Click outside collapses (M9)
+There is no collapse button; the panel collapses on a click outside it, with the hotkey while it is key (§11), or with the menu's Collapse item (§7.10).
+- `PanelController.clickOutsideMonitor: Any?` holds an `NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseDown, .otherMouseDown])` monitor. The handler (called on the main thread) runs `MainActor.assumeIsolated { self?.clickedOutside() }`.
+- A global monitor only sees events delivered to **other** apps, so clicks inside the panel, on its right-click menu, or on Poppy's own menu bar item (§7.12) never collapse it. Mouse monitors need no Accessibility permission.
+- **Installed** in expand's final fade completion, just before `finishAnimation()`. Clicks during the expand animation are ignored.
+- **Removed** at the start of `collapse()`, right after `state = .collapsed`, whatever triggered the collapse.
+- `clickedOutside()`: if `state == .expanded && !isAnimating` and `!NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)`, call `collapse()`.
+- Left clicks count on **mouse-up**, and not when released over the panel: dragging a file from Finder into the terminal starts with a mouse-down in Finder, and must not collapse the panel before the drop.
+- The click itself still goes to the app that was clicked, which takes keyboard focus as usual.
 
 ## 7. Geometry, animation, drag
 
@@ -288,7 +299,7 @@ In `PillView`, ignored while `isAnimating`:
   - `acceptsFirstMouse` returns `true`. Right-click shows the context menu.
   - Contents:
     - Centered title label: `pillTitle` (§7.11), 12 pt system font, `secondaryLabelColor`.
-    - Trailing collapse button, 8 pt from the trailing edge: `FirstMouseButton` (an `NSButton` subclass in `ExpandedView.swift` whose `acceptsFirstMouse(for:)` returns `true`, so one click collapses even when the panel is not key), borderless, SF Symbol `chevron.down`, target `controller`, action `collapse`.
+    - No buttons (the collapse button was removed in M9; §6.3). `hitTest` returns the header itself for any point inside it, so the title also drags.
 - **`contentHost`** (`NSView`):
   - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left, right and bottom. The gap below the header is 0.
   - `wantsLayer = true`, `layer.cornerRadius = 10`, `layer.masksToBounds = true`, no background color.
@@ -296,8 +307,9 @@ In `PillView`, ignored while `isAnimating`:
 
 ### 7.10 Poppy menu (context menu and menu bar)
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
-- It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds two, both with explicit `target = self`:
+- It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds three, each with explicit `target = self`:
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
+  - **"Collapse":** action `collapseFromMenu` calls `collapse()`. Enabled only if `state == .expanded && !isAnimating` (a fallback when there is no hotkey, and for keyboard/VoiceOver users).
   - **"Quit Poppy":** action `quit` calls `NSApp.terminate(nil)`.
 - `menuNeedsUpdate(_:)` calls `populateMenu(_:)` again, so the long-lived menu bar copy is rebuilt each time it opens and never shows stale state.
 - `PanelController.showContextMenu(event:in:)` shows `makeMenu()` with `NSMenu.popUpContextMenu(menu, with: event, for: view)`.
@@ -529,6 +541,7 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 | M6 | `Hotkey/GlobalHotKey.swift` | — |
 | M7 | `scripts/bundle.sh`, `Resources/Info.plist`, `.gitignore` `/build` | — |
 | M8 | Menu bar item (§7.12); `PanelController.makeMenu()` shared with the context menu (§7.10) | — |
+| M9 | Click outside collapses (§6.3); collapse button removed (§7.9) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -549,3 +562,4 @@ It's called from `restart()` and `applicationWillTerminate`. In `restart()` only
 8. Whether SwiftTerm's `backgroundOpacity` looks good over glass: M5.
 9. Whether `panel.animator().setFrame` honors `ctx.timingFunction` (easing only; judged by eye): M4.
 10. The menu bar item's menu doesn't activate Poppy or take key/frontmost from the underlying app, collapsed or expanded: M8.
+11. Whether the global mouse monitor fires for clicks on other apps over fullscreen Spaces, on the desktop, and on other menu bar items, without Accessibility permission, both unbundled and bundled; and that dragging a file from Finder into the expanded terminal doesn't collapse it: M9.
