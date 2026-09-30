@@ -673,10 +673,12 @@ Folders opened with Poppy some other way (`open -a Poppy <dir>`, Finder's Open W
 When the directory changes, the one being left is also kept in the recents (review fix), so the directory Poppy launched in can be picked again.
 
 ### 9.9 The `poppy` shell command (M16)
-`poppy [options] [directory]` in a terminal opens Poppy with the agent in that directory (default: the shell's current directory), launching it if needed. It's a function in `~/.zshrc` (added for the user in M16):
-```zsh
-poppy() { "${POPPY_APP:-$HOME/Documents/poppy/build/Poppy.app}/Contents/MacOS/poppy" --cli "$@"; }
+`poppy [options] [directory]` in a terminal opens Poppy with the agent in that directory (default: the shell's current directory), launching it if needed. `scripts/install.sh` (§12) installs it as a small wrapper script, `$BIN_DIR/poppy` (default `~/.local/bin`), with the installed app's path baked in:
+```sh
+#!/bin/sh
+exec "${POPPY_APP:-/Applications/Poppy.app}/Contents/MacOS/poppy" --cli "$@"
 ```
+(In M16 it was a `poppy()` function in the developer's `~/.zshrc` pointing at `~/Documents/poppy/build/Poppy.app`; a shell function takes precedence over the script, and the installer warns if it finds one.)
 **Client** (`CommandLineClient`, `nonisolated`): `main.swift` checks for `--cli` before creating `NSApplication` and, if present, runs `CommandLineClient.run(<the arguments after it>)` and `exit`s with its status; no app, window or menu bar item. It:
 1. Parses the options (help text in `CommandLineClient.usage`): `-a/--agent NAME` (a built-in agent by name or command word, `claude`, `codex`, `gemini`, `opencode`, or a `config.json` agent by name, case-insensitive; unknown → error listing the names), `-c/--command CMD` (any command), `--pill small|medium|large`, `--auto-open input|done|both|off` (sets both flags), `--focus`/`--no-focus`, `--usage`/`--no-usage`, `-b/--background` (don't expand), `-h/--help`, and at most one directory (relative to the shell's cwd; must exist). Errors go to stderr as `poppy: …` plus a hint, exit 2. `Config.load(quiet: true)` reads `agents` without writing defaults or logging.
 2. Requires running inside the bundle (`Bundle.main.bundleURL` ends in `.app`; `swift run` isn't registered with LaunchServices).
@@ -823,7 +825,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | Key | Value |
 |---|---|
 | `CFBundleExecutable` | `poppy` |
-| `CFBundleIdentifier` | `local.poppy` |
+| `CFBundleIdentifier` | `io.github.dquigles.poppy` (was `local.poppy` until the GitHub release setup; nothing reads it, and Poppy's state lives in `~/.config/poppy`, so the change carries nothing over) |
 | `CFBundleName` | `Poppy` |
 | `CFBundlePackageType` | `APPL` |
 | `CFBundleShortVersionString` | `0.1.0` |
@@ -833,6 +835,15 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | `NSHighResolutionCapable` | `true` |
 
 `.gitignore` adds `/build`.
+
+**Distribution (source only).** Poppy is distributed as source on GitHub (`README.md`, MIT `LICENSE`): users clone and run `scripts/install.sh`. A locally built app carries no quarantine flag, so Gatekeeper never asks, and no Apple Developer ID or notarization is needed. `bundle.sh` builds for the machine's own architecture, so Apple Silicon users get an arm64 build (the arm64 cross-compile was checked on the Intel dev machine with `swift build -c release --arch arm64`). The ad-hoc signature stays: Apple Silicon refuses unsigned binaries.
+
+`scripts/install.sh` (bash, `set -euo pipefail`, `cd`s to the repo root):
+1. Checks for Swift ≥ 6.2 and the macOS 26 SDK (`xcrun --sdk macosx --show-sdk-version`), and says to install Xcode 26 or its Command Line Tools otherwise.
+2. Runs `bundle.sh`.
+3. `APP_DIR` (default `/Applications` if writable, else `~/Applications`): stops a running Poppy with `pkill -x poppy` (waits up to 5 s; not an AppleScript quit, which would ask for Automation access), replaces `Poppy.app` there with `ditto`.
+4. Writes the `poppy` wrapper to `BIN_DIR` (default `~/.local/bin`, §9.9), mode 755; prints the `export PATH` line if `BIN_DIR` isn't on `PATH`, and a note if `~/.zshrc`/`~/.bashrc` define a `poppy()` function.
+5. `open`s the app.
 
 ## 13. Milestones (each builds and runs on its own)
 

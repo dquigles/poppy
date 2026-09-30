@@ -5,7 +5,7 @@
 	<key>CFBundleExecutable</key>
 	<string>poppy</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.poppy</string>
+	<string>io.github.dquigles.poppy</string>
 	<key>CFBundleName</key>
 	<string>Poppy</string>
 	<key>CFBundlePackageType</key>
