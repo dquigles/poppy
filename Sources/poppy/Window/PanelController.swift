@@ -663,11 +663,6 @@ final class PanelController: NSObject {
 
         menu.addItem(.separator())
 
-        let screenshot = NSMenuItem(title: "Take Screenshot", action: #selector(takeScreenshot), keyEquivalent: "")
-        screenshot.target = self
-        screenshot.isEnabled = session != nil && !isAnimating
-        menu.addItem(screenshot)
-
         let restart = NSMenuItem(title: "Restart Agent", action: #selector(restartAgent), keyEquivalent: "")
         restart.target = self
         restart.isEnabled = session != nil
@@ -916,43 +911,6 @@ final class PanelController: NSObject {
         } else if !panel.isKeyWindow {
             panel.makeKeyAndOrderFront(nil)
             if let focusTarget { panel.makeFirstResponder(focusTarget) }
-        }
-    }
-
-    /// The system's interactive capture (crosshair; Space toggles window capture; Esc
-    /// cancels), saved as a PNG whose path goes into the agent. An open panel collapses
-    /// first so it isn't in the way, and opens again with the result.
-    @objc private func takeScreenshot() {
-        guard session != nil, !isAnimating, Attachments.prepareDirectory() else { return }
-        let delay: TimeInterval
-        if state == .expanded {
-            collapse()
-            delay = Self.frameDuration + Self.fadeDuration + 0.1
-        } else {
-            delay = 0
-        }
-        let url = Attachments.newImageURL(prefix: "screenshot")
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            let capture = Process()
-            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            capture.arguments = ["-i", "-x", url.path]  // interactive, no sound
-            capture.terminationHandler = { _ in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        guard FileManager.default.fileExists(atPath: url.path) else {
-                            appLog("screenshot: cancelled")
-                            return
-                        }
-                        appLog("screenshot: \(url.lastPathComponent)")
-                        self?.sendToAgent(Attachments.pasteText(for: [url]))
-                    }
-                }
-            }
-            do {
-                try capture.run()
-            } catch {
-                appLog("screenshot: could not run screencapture: \(error)")
-            }
         }
     }
 

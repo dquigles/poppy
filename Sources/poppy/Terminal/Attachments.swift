@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// image or dropped image data is saved as a PNG, and every attachment becomes a
 /// shell-escaped path, pasted like typed text.
 enum Attachments {
-    /// Where pasted/dropped images and screenshots are saved; per-user and private.
+    /// Where pasted/dropped images are saved; per-user and private.
     static let directory = FileManager.default.temporaryDirectory.appendingPathComponent("poppy-images")
     static let maxAge: TimeInterval = 7 * 24 * 3600
 
@@ -98,7 +98,7 @@ enum Attachments {
         return result
     }
 
-    /// A new, unused file name in `directory`, e.g. "screenshot-20260929-171502.png".
+    /// A new, unused file name in `directory`, e.g. "image-20260929-171502.png".
     static func newImageURL(prefix: String) -> URL {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"

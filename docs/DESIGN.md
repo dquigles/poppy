@@ -47,7 +47,7 @@ Sources/poppy/
   Terminal/ShellEnvironment.swift   builds executable/args/env for the child (and the agent probe)
   Terminal/AgentCatalog.swift       AgentProfile, the agent list and the installed-CLI probe (§9.5)
   Terminal/AgentStatus.swift        AgentStatus + StatusHooks installers (§9.6)
-  Terminal/Attachments.swift        images and files into the agent: paste, drop, screenshots (§9.10)
+  Terminal/Attachments.swift        images and files into the agent: paste, drop (§9.10)
   Terminal/ChildProcess.swift       posix_spawn helper for short-lived helpers (the agent probe, Codex usage)
   Usage/UsageMonitor.swift          UsageReport + UsageMonitor: which source, when to fetch, staleness (§9.7)
   Usage/UsageSources.swift          Claude (OAuth endpoint) and Codex (app-server) fetchers (§9.7)
@@ -337,7 +337,6 @@ In `PillView`, ignored while `isAnimating`:
   - **"Show Usage"** (M15): checkmark from `config.showUsage`; `toggleShowUsage` flips it, saves it with `Config.saveValue`, and updates the monitor, footer and ring at once (§9.7).
   - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
   - separator
-  - **"Take Screenshot"** (M17, §9.10): action `takeScreenshot`. Enabled only if there's a session and not animating.
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
   - separator
   - **"Quit Poppy":** action `quit` calls `NSApp.terminate(nil)`.
@@ -634,7 +633,7 @@ poppy() { "${POPPY_APP:-$HOME/Documents/poppy/build/Poppy.app}/Contents/MacOS/po
 Agents take an attachment as a **path**: Claude Code and Codex attach an image when its path is pasted (a terminal drop is exactly that). So Poppy turns every image or file into shell-escaped paths and pastes them into the agent (`PoppyTerminalView.pasteText`: `send(txt:)`, wrapped in `ESC[200~`/`ESC[201~` when `terminal.bracketedPasteMode`, so the agent sees one paste). SwiftTerm's own paste only reads text and it accepts no drops.
 
 **`Attachments`** (`Terminal/Attachments.swift`):
-- Images are saved as PNG in `<NSTemporaryDirectory>/poppy-images/` (0700; per-user and private), named `image-<yyyyMMdd-HHmmss>.png` / `screenshot-….png` (with `-2`, `-3`, … if taken): PNG data as is, TIFF converted. Promised files are received into their own `drop-<UUID>/` folder per drop (names can't collide). Entries created over 7 days ago (creation date: a promised file keeps its original modification date) are deleted at launch and on every agent (re)start.
+- Images are saved as PNG in `<NSTemporaryDirectory>/poppy-images/` (0700; per-user and private), named `image-<yyyyMMdd-HHmmss>.png` (with `-2`, `-3`, … if taken): PNG data as is, TIFF converted. Promised files are received into their own `drop-<UUID>/` folder per drop (names can't collide). Entries created over 7 days ago (creation date: a promised file keeps its original modification date) are deleted at launch and on every agent (re)start.
 - `text(from:completion:)` (true if it handled it): file URLs → their paths; else file promises (`NSFilePromiseReceiver`, e.g. Mail, Photos; the screenshot thumbnail also offers a file URL, which wins) → received as above, then their paths (asynchronously; failures logged; the reply handler is built in a `nonisolated` helper, since AppKit calls it on the operation queue and a main-actor closure would trap there); else PNG/TIFF data **with no non-blank text** → saved, then its path (text wins, as for ⌘V, e.g. a dragged rich-text selection). `completion` runs on the main actor.
 - `pasteText(for:)`: file reference URLs are turned into path URLs (`filePathURL`); a path containing a control character (e.g. a newline in a file name) is left out and logged; the rest are joined by spaces, each with a backslash before shell-special characters (as Terminal does for a drop), plus a trailing space.
 - `hasAttachment(_:)` (for ⌘V): file URLs, or image data with no non-blank text; so copied text (even with an image alongside) still pastes as text.
@@ -645,7 +644,6 @@ Agents take an attachment as a **path**: Claude Code and Codex attach an image w
 - **Drop on the terminal** (`registerForDraggedTypes(Attachments.dropTypes)`: file URL, PNG, TIFF, string, and file-promise types; registered on each new terminal view): attachments, else a dropped string is pasted (sanitized). The operation is below.
 - **Operation:** `Attachments.operation(for:)`: `.copy` if the source allows it, else the first of `.generic`, `.link`, `.move` it allows. Each drop logs `drop: on pill|terminal ops=<mask> types=[…]`, then `attachments: …` (files, promised files, or nothing found).
 - **Drop on the pill** (`PillView`, same types; accepted only if there's a session and not animating). The logo `NSImageView` is `unregisterDraggedTypes()`'d: an image view registers for image drags itself, so it took the drag over the middle of the pill and refused it (found in the user's M17 test: drops only worked when the drag entered across the rim). `PanelController.dropped(_:)` pastes the same way, then `sendToAgent` expands the panel (focused) or focuses it. **Not while the agent is waiting for an answer** (status `.waiting`, §9.6): then nothing is pasted (logged) and the panel is only shown, since the pasted characters could answer its prompt (review fix).
-- **Take Screenshot** (menu, §7.10): collapses an open panel first (then waits for the animation), runs `/usr/sbin/screencapture -i -x <path>` (interactive crosshair, Space for a window, Esc cancels; no sound); if the file exists when it exits, `sendToAgent` with its path, else logs `screenshot: cancelled`. macOS asks the user to allow **Screen Recording** for Poppy the first time (the capture runs on Poppy's behalf).
 
 ## 10. Liquid Glass (`GlassBackgroundView`)
 
@@ -793,7 +791,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M14 | `Terminal/AgentStatus.swift`; status file + polling in `TerminalSession`; hooks for Claude (`--settings`), Codex, Gemini, opencode; pill tint; Auto-Open menu and `GlassPanel` key guard; config flags (§9.6, §7.15, §8.1) | — |
 | M15 | `Usage/*`, `Terminal/ChildProcess.swift` (probe refactored onto it), `Views/UsageBar.swift`; usage footer in the expanded view, usage ring on the pill, Show Usage menu item, `showUsage` flag (§9.7, §7.9, §7.10, §7.11, §8.1) | — |
 | M16 | Working Directory menu (recents, Choose Folder…), `apply`/`changeAgent`, `TerminalSession.switchTo(command:directory:)` (replacing `switchCommand`), header title = directory name, `PanelState.recentDirectories`, open-documents handling and the `public.folder` document type (Info.plist); `App/LaunchRequest.swift`, `App/CommandLineClient.swift`, the `--cli` branch in `main.swift`, the `poppy` shell function with flags; the round-petal menu bar icon `poppy-menubar` (§9.8, §9.9, §7.9, §7.10, §7.11, §7.12, §8) | — |
-| M17 | `Terminal/Attachments.swift`; ⌘V of images/files, drag and drop onto the terminal and the pill, Take Screenshot menu item (§9.10, §7.10) | — |
+| M17 | `Terminal/Attachments.swift`; ⌘V of images/files, drag and drop onto the terminal and the pill (§9.10); a Take Screenshot menu item was removed after M17 at the user's request | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -822,4 +820,4 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 16. Whether each agent's hooks fire as mapped (Claude via `--settings`, Codex after approving the new hooks, Gemini, opencode's `chat.message`/`permission.ask` hook names), whether Codex's PostToolUse and Gemini's AfterTool report working after an approval, whether Codex/Gemini need hooks switched on in their settings, whether opencode's plugin directory is `plugins/` (not the older `plugin/`), and whether auto-open steals focus acceptably (key guard) and collapses back after answering: M14.
 17. Whether the Keychain read via `/usr/bin/security` works without a prompt (or after one "Always Allow") in both the unbundled and bundled app; whether the undocumented Claude usage endpoint keeps answering at this cadence without 429s; whether `codex app-server` answers through the login shell within the timeout; whether the ring reads well on the glass at all three pill sizes: M15.
 18. Whether Choose Folder…'s open panel appears over a fullscreen app's Space and takes typing, and whether activation goes back to the previous app afterward (fullscreen included); whether `open -g -a <bundle> <file>` routes to the running bundled app without bringing it forward (verified from a script: Obsidian stayed frontmost), and whether the client's request is always picked up (once, right after a rebuild, it wasn't; not reproduced): M16.
-19. Whether Claude Code and Codex attach an image from a bracketed-paste path in Poppy (as from a terminal drop); whether drops reach the non-activating panel and the pill over fullscreen apps; whether the screenshot thumbnail's drag arrives as a file promise or a file URL; and how the Screen Recording prompt behaves for the bundled app (and `swift run`, where the terminal app is the one asked; with permission denied, newer macOS may still write a wallpaper-only capture, whose path would be pasted): M17.
+19. Whether Claude Code and Codex attach an image from a bracketed-paste path in Poppy (as from a terminal drop); whether drops reach the non-activating panel and the pill over fullscreen apps; whether the screenshot thumbnail's drag arrives as a file promise or a file URL: M17.
