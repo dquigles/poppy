@@ -5,7 +5,7 @@ A floating Liquid Glass terminal for your coding agent on macOS.
 A small glass pill sits in a corner of your screen, on top of everything and on every Space, fullscreen apps included. Click it (or press **⌃⌥Space**) and it opens into a glass panel with a real terminal running your agent: Claude Code by default, or Codex, Antigravity, opencode, or any command you like. Poppy never takes focus away from the app you're in, so a fullscreen app stays fullscreen, and a click outside the panel folds it back into the pill.
 
 - **Agent status on the pill:** blue while the agent works, orange when it needs your input, green when it's done. It can also open by itself when the agent needs you.
-- **Usage meters** for Claude and Codex: a 5-hour ring around the pill, and % left with reset times in the panel.
+- **Usage meters** for Claude, Codex and Antigravity: a ring around the pill (the 5-hour limit, or for Antigravity the weekly limit of the model group in use), and % left with reset times in the panel.
 - **Images and files:** paste a screenshot with ⌘V, or drag files and images onto the terminal or the pill, and the agent gets their paths.
 - **A `poppy` command:** `poppy ~/code/myproject` opens the agent in that folder.
 
@@ -97,8 +97,9 @@ Poppy reads this file when it starts, so restart Poppy after editing it.
   - opencode: a plugin, `~/.config/opencode/plugins/poppy-status.ts`.
   - It only adds entries; it never removes or changes yours. Set `"statusHooks": false` to turn this off.
 - **Usage meters.**
-  - For Claude, Poppy reads Claude Code's login from your Keychain (macOS asks you the first time; choose "Always Allow"). It then calls Anthropic's OAuth usage endpoint (`api.anthropic.com/api/oauth/usage`), which is undocumented and could change.
+  - For Claude, Poppy runs Claude Code's own `/usage` command (`claude -p /usage`): no model call, not saved as a session, and with your user settings skipped, so hooks in your own Claude Code settings don't fire for it (organization-managed settings still apply). Poppy never reads your Claude login.
   - For Codex, it asks `codex app-server` for its rate limits.
+  - For Antigravity, it runs `agy -p /usage` (no model call), only after checking that `agy` is signed in (it looks for `agy`'s login in your Keychain by name, without reading it), since a signed-out `agy` would open a browser sign-in page.
   - Turn the meters off with **Show Usage** in the menu.
 - **Pasted and dropped images** are saved as PNGs in a private temporary folder and deleted after a week.
 

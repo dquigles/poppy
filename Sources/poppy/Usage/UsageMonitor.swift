@@ -10,15 +10,13 @@ final class UsageMonitor {
     static let tickInterval: TimeInterval = 60
     static let pollInterval: TimeInterval = 5 * 60
     static let failureRetry: TimeInterval = 5 * 60
-    static let initialBackoff: TimeInterval = 10 * 60
-    static let maxBackoff: TimeInterval = 30 * 60
+    static let unavailableRetry: TimeInterval = 10 * 60
 
     private struct Source {
         var report: UsageReport?
         var failure: String?
         var nextAllowed = Date.distantPast
         var inFlight = false
-        var backoff: TimeInterval = UsageMonitor.initialBackoff
     }
 
     /// Keyed by harness and executable prefix, so two Codex profiles with different
@@ -78,7 +76,7 @@ final class UsageMonitor {
     func setEnabled(_ enabled: Bool) {
         self.enabled = enabled
         if enabled {
-            // Turning it back on retries a refused Keychain read or a silent agy (DESIGN §9.7, §9.12).
+            // Turning it back on retries a silent agy (DESIGN §9.12).
             for key in sources.keys where sources[key]?.nextAllowed == .distantFuture {
                 sources[key]?.nextAllowed = .distantPast
             }
@@ -107,17 +105,17 @@ final class UsageMonitor {
 
         let command = command
         Task { [weak self] in
-            let result: Result<UsageReport, Error>
-            if harness == .claude {
-                do { result = .success(try await ClaudeUsage.fetch()) } catch { result = .failure(error) }
-            } else {
-                result = await Task.detached { () -> Result<UsageReport, Error> in
-                    do {
-                        return .success(harness == .antigravity ? try AntigravityUsage.fetch(command: command)
-                                                                : try CodexUsage.fetch(command: command))
-                    } catch { return .failure(error) }
-                }.value
-            }
+            // Every source runs its CLI and blocks, so never on the main actor.
+            let result = await Task.detached { () -> Result<UsageReport, Error> in
+                do {
+                    switch harness {
+                    case .claude: return .success(try ClaudeUsage.fetch(command: command))
+                    case .codex: return .success(try CodexUsage.fetch(command: command))
+                    case .antigravity: return .success(try AntigravityUsage.fetch(command: command))
+                    case .opencode, .other: throw UsageError.failed("no usage source")
+                    }
+                } catch { return .failure(error) }
+            }.value
             self?.finished(key, harness, result)
         }
     }
@@ -130,17 +128,13 @@ final class UsageMonitor {
         case .success(let report):
             source.report = report
             source.failure = nil
-            source.backoff = Self.initialBackoff
             source.nextAllowed = now.addingTimeInterval(harness == .claude ? 120 : 60)
             appLog("usage: \(harness.displayName) \(report.summary)")
         case .failure(let error):
-            if case UsageError.rateLimited = error {
-                source.nextAllowed = now.addingTimeInterval(source.backoff)
-                source.backoff = min(source.backoff * 2, Self.maxBackoff)
-            } else if case UsageError.signedOut = error {
+            if case UsageError.signedOut = error {
                 source.nextAllowed = now.addingTimeInterval(60)  // cheap check, no prompt: a sign-in shows soon
-            } else if case UsageError.keychainDenied = error {
-                source.nextAllowed = .distantFuture  // until Show Usage is toggled or Poppy relaunches
+            } else if case UsageError.unavailable = error {
+                source.nextAllowed = now.addingTimeInterval(Self.unavailableRetry)  // e.g. an API-key login
             } else if case UsageError.noAnswer = error {
                 source.nextAllowed = .distantFuture  // an expired agy login could open the browser again
             } else {

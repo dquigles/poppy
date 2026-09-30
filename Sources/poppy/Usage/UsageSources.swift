@@ -91,10 +91,8 @@ nonisolated struct UsageReport: Sendable, Equatable {
 }
 
 nonisolated enum UsageError: Error, CustomStringConvertible {
-    case rateLimited
-    /// The Keychain read was refused, cancelled or timed out; not retried automatically,
-    /// so the access prompt doesn't keep coming back.
-    case keychainDenied
+    /// Nothing to show for this login (e.g. Claude with an API key); retried rarely.
+    case unavailable(String)
     /// `agy` has no login in the Keychain; checked without running it (DESIGN §9.12).
     case signedOut
     /// `agy -p /usage` gave no answer (e.g. an expired login waiting on a browser sign-in);
@@ -104,8 +102,7 @@ nonisolated enum UsageError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .rateLimited: "rate limited"
-        case .keychainDenied: "Keychain access to Claude Code's login was not allowed (turn Show Usage off and on to retry)"
+        case .unavailable(let reason): reason
         case .signedOut: "Antigravity isn't signed in (sign in to agy; usage updates within a minute)"
         case .noAnswer: "no answer from agy (turn Show Usage off and on to retry)"
         case .failed(let reason): reason
@@ -113,97 +110,115 @@ nonisolated enum UsageError: Error, CustomStringConvertible {
     }
 }
 
-// MARK: - Claude: the OAuth usage endpoint
+// MARK: - Claude: `claude -p /usage`
 
-/// The same numbers Claude Code's `/usage` shows, from the endpoint it calls, with the
-/// token it keeps in the Keychain (DESIGN §9.7). Undocumented: every field is optional.
+/// The limits Claude Code's own `/usage` shows, from print mode: no model call, not saved as
+/// a session, run from a temp folder with user settings skipped so the user's own hooks
+/// don't fire (DESIGN §9.13). The numbers are display text, so a wording change in a Claude
+/// Code update shows as a failure, never as wrong numbers.
 nonisolated enum ClaudeUsage {
-    static let url = URL(string: "https://api.anthropic.com/api/oauth/usage")!
-    static let userAgent = "claude-code/2.1.0"
+    static let timeout: TimeInterval = 20
 
-    /// `@concurrent`: the token read blocks (the `security` subprocess), so never on the main actor.
-    @concurrent static func fetch() async throws -> UsageReport {
-        let token = try accessToken()
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.finishTasksAndInvalidate() }
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw UsageError.failed(error.localizedDescription)
+    static func fetch(command: String) throws -> UsageReport {
+        let folder = FileManager.default.temporaryDirectory.path
+        // cd first: the login shell's dotfiles may change folder, and a folder's .claude/
+        // settings (or ~/.claude/settings.json, from home) would bring its hooks back.
+        let script = "cd '" + folder.replacingOccurrences(of: "'", with: "'\\''") + "' && "
+            + StatusHooks.executablePrefix(command)
+            + " -p /usage --output-format json --no-session-persistence --setting-sources project"
+        var spec = ShellEnvironment.probeSpec(script: script)
+        spec.currentDirectory = folder
+        guard let run = ChildProcess.run(spec, label: "claude usage", timeout: timeout,
+                                         until: { result(in: $0) != nil }),
+              let object = result(in: run.output) else {
+            throw UsageError.failed("no answer from claude")
         }
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if code == 429 { throw UsageError.rateLimited }
-        guard code == 200 else { throw UsageError.failed("HTTP \(code)") }
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw UsageError.failed("unexpected response")
+        let text = object["result"] as? String ?? ""
+        if object["is_error"] as? Bool == true {
+            throw UsageError.failed(firstLine(text) ?? "claude /usage failed")
         }
-        let report = UsageReport(short: window(root["five_hour"], minutes: 300),
-                                 long: window(root["seven_day"], minutes: 10080),
-                                 fetchedAt: Date())
-        guard report.short != nil || report.long != nil else { throw UsageError.failed("no usage in response") }
-        return report
+        var short: UsageWindow?
+        var long: UsageWindow?
+        for line in text.split(separator: "\n") {
+            let line = line.trimmingCharacters(in: .whitespaces)
+            guard let match = linePattern.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  let title = Range(match.range(at: 1), in: line).map({ String(line[$0]) }),
+                  let used = Range(match.range(at: 2), in: line).flatMap({ Double(line[$0]) }) else { continue }
+            let resets = Range(match.range(at: 3), in: line).flatMap { resetDate(String(line[$0])) }
+            if title == "Current session" {
+                short = UsageWindow(usedPercent: used, resetsAt: resets, minutes: 300)
+            } else {
+                long = UsageWindow(usedPercent: used, resetsAt: resets, minutes: 10080)
+            }
+        }
+        guard short != nil || long != nil else {
+            // Claude Code prints this header only for a subscription login (read from its code);
+            // with it, the limit lines' wording changed. Without it (API key, signed out, a
+            // gateway) /usage shows only costs.
+            if text.hasPrefix("You are currently using your") {
+                throw UsageError.failed("couldn't read Claude's /usage (Claude Code may have changed its wording)")
+            }
+            throw UsageError.unavailable("no subscription limits reported (not signed in, or an API-key login)")
+        }
+        return UsageReport(short: short, long: long, fetchedAt: Date())
     }
 
-    private static func window(_ value: Any?, minutes: Int) -> UsageWindow? {
-        guard let object = value as? [String: Any],
-              let used = (object["utilization"] as? NSNumber)?.doubleValue else { return nil }
-        return UsageWindow(usedPercent: used, resetsAt: (object["resets_at"] as? String).flatMap(parseDate),
-                           minutes: minutes)
+    /// "Current session: 72% used · resets Sep 30 at 2:59pm (America/Chicago)" (U+00B7).
+    private static let linePattern = try! NSRegularExpression(
+        pattern: "^(Current session|Current week \\(all models\\)): (\\d+)% used(?: \u{00B7} resets (.+))?$")
+
+    /// The first stdout line that is the print-mode result (dotfiles may print other lines first).
+    private static func result(in output: Data) -> [String: Any]? {
+        for line in output.split(separator: 0x0A) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  object["type"] as? String == "result" else { continue }
+            return object
+        }
+        return nil
     }
 
-    /// ISO 8601, with or without fractional seconds (the endpoint sends microseconds).
-    static func parseDate(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
+    private static func firstLine(_ text: String) -> String? {
+        let line = text.split(separator: "\n").first.map { String($0.trimmingCharacters(in: .whitespaces).prefix(120)) }
+        return line?.isEmpty == false ? line : nil
     }
 
-    /// Read on every fetch (Claude rotates it); never stored or logged.
-    private static func accessToken() throws -> String {
-        var text = try keychainCredentials()
-        if text == nil {
-            let file = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/.credentials.json")
-            text = try? String(contentsOf: file, encoding: .utf8)
+    /// "Sep 30 at 2:59pm (America/Chicago)", "Oct 2 at 6am (…)", "Jan 3, 2027 at 6am (…)";
+    /// nil if it can't be read (the window is still shown, without a countdown).
+    static func resetDate(_ text: String, now: Date = Date()) -> Date? {
+        var text = text.trimmingCharacters(in: .whitespaces)
+        var zone = TimeZone.current
+        if text.hasSuffix(")"), let open = text.lastIndex(of: "(") {
+            let name = String(text[text.index(after: open)..<text.index(before: text.endIndex)])
+            // An unknown zone would silently read the time in the wrong one: no date instead.
+            guard let parsed = TimeZone(identifier: name) ?? TimeZone(abbreviation: name) else { return nil }
+            zone = parsed
+            text = text[..<open].trimmingCharacters(in: .whitespaces)
         }
-        guard let text, let data = text.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw UsageError.failed("not signed in to Claude Code")
+        // Any space before am/pm removed (ICU may use U+202F or U+00A0), and am/pm uppercased.
+        text = text.replacingOccurrences(of: "[\\s\u{202F}\u{00A0}]+([AaPp][Mm])$", with: "$1",
+                                         options: .regularExpression)
+        if let suffix = ["am", "pm"].first(where: { text.lowercased().hasSuffix($0) }) {
+            text = text.dropLast(2) + suffix.uppercased()
         }
-        let oauth = root["claudeAiOauth"] as? [String: Any] ?? root
-        guard let token = oauth["accessToken"] as? String, !token.isEmpty else {
-            throw UsageError.failed("not signed in to Claude Code")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.defaultDate = calendar.date(from: DateComponents(year: calendar.component(.year, from: now), month: 1, day: 1))
+        for separator in [" 'at' ", ", "] {
+            for (format, hasYear) in [("MMM d, yyyy\(separator)h:mma", true), ("MMM d, yyyy\(separator)ha", true),
+                                      ("MMM d\(separator)h:mma", false), ("MMM d\(separator)ha", false)] {
+                formatter.dateFormat = format
+                guard let date = formatter.date(from: text) else { continue }
+                // No year: a reset is never far in the past, so a date over 30 days ago is next year's.
+                if !hasYear, date < now.addingTimeInterval(-30 * 86400) {
+                    return calendar.date(byAdding: .year, value: 1, to: date)
+                }
+                return date
+            }
         }
-        // Claude refreshes an expired token the next time it runs.
-        if let expires = (oauth["expiresAt"] as? NSNumber)?.doubleValue,
-           Date(timeIntervalSince1970: expires / 1000) < Date() {
-            throw UsageError.failed("Claude Code's login token has expired")
-        }
-        return token
-    }
-
-    /// The Keychain item Claude Code maintains, via `security` (DESIGN §9.7). Nil if
-    /// there's no such item; throws `keychainDenied` if reading it was refused, cancelled
-    /// or timed out (60 s, time to answer the access prompt).
-    private static func keychainCredentials() throws -> String? {
-        let spec = LaunchSpec(executable: "/usr/bin/security",
-                              args: ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                              environment: [], currentDirectory: NSHomeDirectory())
-        guard let result = ChildProcess.run(spec, label: "keychain read", timeout: 60), result.exitedNormally else {
-            throw UsageError.keychainDenied
-        }
-        let code = result.status.map { ($0 >> 8) & 0xff } ?? -1
-        if code == 44 { return nil }  // errSecItemNotFound: not signed in (or a file login)
-        guard code == 0 else { throw UsageError.keychainDenied }
-        let text = String(decoding: result.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        return nil
     }
 }
 
