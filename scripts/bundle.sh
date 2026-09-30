@@ -19,6 +19,21 @@ cp Resources/Logos/*.png Resources/Logos/src/LICENSE-lobe-icons "$APP/Contents/R
 # SwiftTerm's resource bundle (Metal shaders) is intentionally not copied:
 # the Metal renderer is off and SwiftTerm doesn't load it via Bundle.module.
 
-codesign --force --deep --sign - "$APP"
+# Sign with a certificate if there is one, so the app keeps one identity across rebuilds and
+# macOS remembers its Desktop/Documents permissions; ad-hoc signatures change with every build.
+# POPPY_SIGN_IDENTITY picks one ("-" forces ad-hoc); otherwise the first Apple Development or
+# Developer ID Application identity (a free Apple ID in Xcode creates an Apple Development one).
+identity="${POPPY_SIGN_IDENTITY:-}"
+if [[ -z "$identity" ]]; then
+    identity=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -E '"(Apple Development|Developer ID Application):' | head -1 | awk '{print $2}' || true)
+fi
+if [[ -n "$identity" && "$identity" != "-" ]] \
+    && codesign --force --deep --timestamp=none --sign "$identity" "$APP"; then
+    echo "Signed with $(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+else
+    [[ -n "$identity" && "$identity" != "-" ]] && echo "Signing with $identity failed; signing ad-hoc instead."
+    codesign --force --deep --sign - "$APP"
+fi
 
 echo "Built $APP"

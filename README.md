@@ -33,7 +33,9 @@ It then starts Poppy. To update later, run `git pull` and `./scripts/install.sh`
 
 You can put things elsewhere: `APP_DIR=~/Applications BIN_DIR=/usr/local/bin ./scripts/install.sh`.
 
-Because you build Poppy yourself, macOS runs it without any "unidentified developer" warning. No Apple Developer account is involved.
+Because you build Poppy yourself, macOS runs it without any "unidentified developer" warning. No paid Apple Developer account is involved.
+
+macOS asks whether Poppy may access your Desktop or Documents folders when the agent works there (the agent runs inside Poppy, so its file access counts as Poppy's). If you have an Apple Development certificate (Xcode creates one for free when you sign in with your Apple ID under Xcode → Settings → Accounts), the build is signed with it and macOS remembers your answers across updates; otherwise it may ask again after each rebuild. Set `POPPY_SIGN_IDENTITY` to choose a certificate, or `-` to skip signing with one.
 
 To start Poppy at login, add it in **System Settings → General → Login Items**.
 
