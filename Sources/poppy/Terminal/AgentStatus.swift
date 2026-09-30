@@ -29,8 +29,8 @@ nonisolated enum StatusHooks {
 
     /// Readies status reporting for `command`'s harness and returns the command to run:
     /// Claude gets `--settings <Poppy's hooks file>` right after the executable word
-    /// (nothing global is touched); Codex, Gemini and opencode get Poppy's entries merged
-    /// into their global config.
+    /// (nothing global is touched); Codex gets Poppy's entries merged into its global
+    /// config; opencode and Antigravity get a Poppy-owned plugin.
     static func prepare(command: String) -> String {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         switch Harness(command: command) {
@@ -46,16 +46,11 @@ nonisolated enum StatusHooks {
                 ("SessionStart", .idle), ("UserPromptSubmit", .working), ("PreToolUse", .working),
                 ("PostToolUse", .working), ("PermissionRequest", .waiting), ("Stop", .done),
             ])
-        case .gemini:
-            // Gemini matches `matcher` as a regex only for tool events; other events get no
-            // matcher (which matches all), as other tools' Gemini hooks do.
-            mergeHooks(into: home.appendingPathComponent(".gemini/settings.json"), events: [
-                ("SessionStart", .idle), ("BeforeAgent", .working), ("BeforeTool", .working),
-                ("AfterTool", .working), ("Notification", .waiting), ("AfterAgent", .done),
-            ], matcherEvents: ["BeforeTool", "AfterTool"])
+        case .antigravity:
+            writeAntigravityPlugin(home.appendingPathComponent(".gemini/config/plugins/poppy-status"))
         case .opencode:
             let config = directory(fromEnvironment: "XDG_CONFIG_HOME") ?? home.appendingPathComponent(".config")
-            writeOpencodePlugin(config.appendingPathComponent("opencode/plugins/poppy-status.ts"))
+            writeIfChanged(opencodePlugin, to: config.appendingPathComponent("opencode/plugins/poppy-status.ts"))
         case .other:
             break
         }
@@ -134,14 +129,13 @@ nonisolated enum StatusHooks {
         }
     }
 
-    // MARK: - Codex / Gemini: additive merge into a shared hooks file
+    // MARK: - Codex: additive merge into a shared hooks file
 
     /// Appends one `{matcher: ".*", hooks: [Poppy's command]}` entry per event unless an
     /// entry for that event already contains `marker`. Never removes or reorders anything
     /// (Codex records approval per entry position), never touches other keys, and writes
     /// nothing if the file can't be read or isn't the expected shape.
-    /// `matcherEvents`: events whose entry gets `"matcher": ".*"` (nil: all of them).
-    private static func mergeHooks(into url: URL, events: [(String, AgentStatus)], matcherEvents: Set<String>? = nil) {
+    private static func mergeHooks(into url: URL, events: [(String, AgentStatus)]) {
         var root: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url),
@@ -166,9 +160,7 @@ nonisolated enum StatusHooks {
                 return String(decoding: data, as: UTF8.self).contains(marker)
             }
             if present { continue }
-            var entry: [String: Any] = ["hooks": [["type": "command", "command": command(status)]]]
-            if matcherEvents?.contains(event) ?? true { entry["matcher"] = ".*" }
-            entries.append(entry)
+            entries.append(["matcher": ".*", "hooks": [["type": "command", "command": command(status)]]])
             hooks[event] = entries
             changed = true
         }
@@ -231,12 +223,42 @@ nonisolated enum StatusHooks {
 
     """
 
-    private static func writeOpencodePlugin(_ url: URL) {
-        if (try? String(contentsOf: url, encoding: .utf8)) == opencodePlugin { return }
+    // MARK: - Antigravity: a Poppy-owned plugin folder (DESIGN §9.11)
+
+    /// `~/.gemini/config/plugins/<name>/` is picked up without an install step (measured).
+    /// There's no hook for "waiting", and PreToolUse fires before a permission prompt.
+    private static func writeAntigravityPlugin(_ directory: URL) {
+        let manifest: [String: Any] = [
+            "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+            "name": "poppy-status",
+            "description": "Reports agent status to Poppy; does nothing outside Poppy.",
+        ]
+        func handler(_ status: AgentStatus) -> [String: Any] { ["type": "command", "command": command(status)] }
+        func tool(_ status: AgentStatus) -> [String: Any] { ["matcher": "*", "hooks": [handler(status)]] }
+        let hooks: [String: Any] = ["poppy-status": [
+            "PreInvocation": [handler(.working)],
+            "PreToolUse": [tool(.working)],
+            "PostToolUse": [tool(.working)],
+            "Stop": [handler(.done)],
+        ]]
+        for (name, object) in [("plugin.json", manifest), ("hooks.json", hooks)] {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: object,
+                                                      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+                writeIfChanged(String(decoding: data, as: UTF8.self) + "\n", to: directory.appendingPathComponent(name))
+            } catch {
+                appLog("status hooks: could not encode \(name): \(error)")
+            }
+        }
+    }
+
+    /// For Poppy-owned files: skipped when the text is unchanged, else written atomically.
+    private static func writeIfChanged(_ text: String, to url: URL) {
+        if (try? String(contentsOf: url, encoding: .utf8)) == text { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
-            try opencodePlugin.write(to: url, atomically: true, encoding: .utf8)
+            try text.write(to: url, atomically: true, encoding: .utf8)
             appLog("status hooks: wrote \(url.path)")
         } catch {
             appLog("status hooks: could not write \(url.path): \(error)")

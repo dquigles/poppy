@@ -29,7 +29,7 @@ final class AgentCatalog {
     nonisolated static let builtIns = [
         AgentProfile(name: "Claude Code", command: "claude"),
         AgentProfile(name: "Codex", command: "codex"),
-        AgentProfile(name: "Gemini CLI", command: "gemini"),
+        AgentProfile(name: "Antigravity", command: "agy"),
         AgentProfile(name: "opencode", command: "opencode"),
     ]
     private nonisolated static let probeTimeout: TimeInterval = 5

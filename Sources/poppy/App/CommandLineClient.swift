@@ -13,7 +13,7 @@ nonisolated enum CommandLineClient {
     Opens Poppy with the agent in <directory> (default: the current directory).
     Options are saved, like changing them in Poppy's menu.
 
-      -a, --agent NAME        claude, codex, gemini, opencode, or an agent name from config.json
+      -a, --agent NAME        claude, codex, agy, opencode, or an agent name from config.json
       -c, --command CMD       run CMD (any shell command) as the agent
           --pill SIZE         small, medium or large
           --auto-open WHEN    input, done, both or off

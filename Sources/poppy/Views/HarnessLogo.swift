@@ -3,7 +3,7 @@ import AppKit
 /// The agent CLI Poppy is running, detected from the command (DESIGN §7.11).
 /// Drives the pill logo.
 nonisolated enum Harness: Sendable {
-    case claude, codex, gemini, opencode, other
+    case claude, codex, antigravity, opencode, other
 
     /// From the command's first word, e.g. "/usr/local/bin/claude --x" -> .claude.
     /// Aliases and wrappers (e.g. "npx …") are `.other`.
@@ -14,7 +14,7 @@ nonisolated enum Harness: Sendable {
         switch (first as NSString).lastPathComponent.lowercased() {
         case "claude": self = .claude
         case "codex": self = .codex
-        case "gemini": self = .gemini
+        case "agy": self = .antigravity  // not "antigravity": likely the IDE's launcher
         case "opencode": self = .opencode
         default: self = .other
         }
@@ -24,7 +24,7 @@ nonisolated enum Harness: Sendable {
         switch self {
         case .claude: "Claude Code"
         case .codex: "Codex"
-        case .gemini: "Gemini CLI"
+        case .antigravity: "Antigravity"
         case .opencode: "opencode"
         case .other: "Poppy"
         }
@@ -54,7 +54,7 @@ enum HarnessLogo {
         switch harness {
         case .claude: "claude"
         case .codex: "codex"
-        case .gemini: "gemini"
+        case .antigravity: "antigravity"
         case .opencode: "opencode"
         case .other: "poppy"  // unrecognized CLIs and plain shells
         }

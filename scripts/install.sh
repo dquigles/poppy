@@ -65,5 +65,3 @@ if grep -qsE '^[[:space:]]*(function[[:space:]]+)?poppy[[:space:]]*\(\)' "$HOME/
 fi
 
 open "$APP"
-echo
-echo "Poppy is running: look for the pill in the bottom-right corner, or press ⌃⌥Space."

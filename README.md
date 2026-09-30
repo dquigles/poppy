@@ -2,7 +2,7 @@
 
 A floating Liquid Glass terminal for your coding agent on macOS.
 
-A small glass pill sits in a corner of your screen, on top of everything and on every Space, fullscreen apps included. Click it (or press **⌃⌥Space**) and it opens into a glass panel with a real terminal running your agent: Claude Code by default, or Codex, Gemini CLI, opencode, or any command you like. Poppy never takes focus away from the app you're in, so a fullscreen app stays fullscreen, and a click outside the panel folds it back into the pill.
+A small glass pill sits in a corner of your screen, on top of everything and on every Space, fullscreen apps included. Click it (or press **⌃⌥Space**) and it opens into a glass panel with a real terminal running your agent: Claude Code by default, or Codex, Antigravity, opencode, or any command you like. Poppy never takes focus away from the app you're in, so a fullscreen app stays fullscreen, and a click outside the panel folds it back into the pill.
 
 - **Agent status on the pill:** blue while the agent works, orange when it needs your input, green when it's done. It can also open by itself when the agent needs you.
 - **Usage meters** for Claude and Codex: a 5-hour ring around the pill, and % left with reset times in the panel.
@@ -14,7 +14,7 @@ A small glass pill sits in a corner of your screen, on top of everything and on 
 - **macOS 26 (Tahoe)** for the Liquid Glass look. Poppy also runs on macOS 14–15 with a frosted-glass fallback, but that is less tested.
 - **Apple Silicon or Intel.** It builds natively for your Mac's chip.
 - **Xcode 26, or its Command Line Tools** (Swift 6.2 and the macOS 26 SDK), to build it. Install the tools with `xcode-select --install`, or install Xcode from the App Store.
-- **The agent you want to use**, installed and working in your terminal, e.g. [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`).
+- **The agent you want to use**, installed and working in your terminal, e.g. [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`), Codex (`codex`) or the [Antigravity CLI](https://antigravity.google) (`agy`).
 
 ## Install
 
@@ -55,7 +55,7 @@ poppy [options] [directory]
 Opens Poppy with the agent in <directory> (default: the current directory).
 Options are saved, like changing them in Poppy's menu.
 
-  -a, --agent NAME        claude, codex, gemini, opencode, or an agent name from config.json
+  -a, --agent NAME        claude, codex, agy, opencode, or an agent name from config.json
   -c, --command CMD       run CMD (any shell command) as the agent
       --pill SIZE         small, medium or large
       --auto-open WHEN    input, done, both or off
@@ -93,7 +93,7 @@ Poppy reads this file when it starts, so restart Poppy after editing it.
 - **Status hooks.** To show the agent's status, Poppy adds small hooks to each agent's config. Each hook only writes one word to a file Poppy gives it, and does nothing when the agent isn't running inside Poppy.
   - Claude Code: a separate settings file, `~/.config/poppy/claude-hooks.json`, passed with `--settings`. Your own settings are untouched.
   - Codex: entries appended to `~/.codex/hooks.json`. Codex asks you once to approve them.
-  - Gemini CLI: entries appended to `~/.gemini/settings.json`.
+  - Antigravity: a plugin, `~/.gemini/config/plugins/poppy-status/`. That folder is shared with the Antigravity desktop app and IDE, where the plugin does nothing. Antigravity has no hook for "waiting for you", so its pill never turns orange: it stays blue while Antigravity asks you to approve a command, and idle while it asks whether to trust a new folder.
   - opencode: a plugin, `~/.config/opencode/plugins/poppy-status.ts`.
   - It only adds entries; it never removes or changes yours. Set `"statusHooks": false` to turn this off.
 - **Usage meters.**
@@ -108,10 +108,10 @@ Poppy needs no special permissions (no Accessibility, Screen Recording or Input 
 
 ```sh
 pkill -x poppy
-rm -rf /Applications/Poppy.app ~/.local/bin/poppy ~/.config/poppy
+rm -rf /Applications/Poppy.app ~/.local/bin/poppy ~/.config/poppy ~/.gemini/config/plugins/poppy-status
 ```
 
-Then remove Poppy's hook entries from `~/.codex/hooks.json` and `~/.gemini/settings.json` if you used those agents: each entry mentions `POPPY_STATUS_FILE`. Also delete `~/.config/opencode/plugins/poppy-status.ts` if it's there.
+Then remove Poppy's hook entries from `~/.codex/hooks.json` if you used Codex: each entry mentions `POPPY_STATUS_FILE`. Also delete `~/.config/opencode/plugins/poppy-status.ts` if it's there.
 
 ## Development
 
