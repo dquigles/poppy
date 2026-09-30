@@ -81,7 +81,12 @@ final class PillView: NSView {
         }
         var usageSuffix = ""
         if let usage {
-            usageSuffix = " · \(UsageStyle.percent(usage.usedPercent)) of \(usage.label(fallback: "5h")) used"
+            if let name = usage.name {
+                let period = usage.minutes == 10080 ? " weekly" : usage.minutes == 1440 ? " daily" : ""
+                usageSuffix = " · \(UsageStyle.percent(usage.usedPercent)) of the \(name)\(period) limit used"
+            } else {
+                usageSuffix = " · \(UsageStyle.percent(usage.usedPercent)) of \(usage.label(fallback: "5h")) used"
+            }
         }
         toolTip = baseLabel + suffix + usageSuffix
         setAccessibilityLabel(baseLabel + suffix + usageSuffix)

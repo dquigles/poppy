@@ -23,6 +23,11 @@ final class TerminalSession {
     /// Modification date of the last report acted on; a hook rewriting the same word is
     /// still a new report (e.g. "done" at the end of every turn).
     private var lastStatusDate: Date?
+    /// The model the agent last called, if its hooks report it (Antigravity, DESIGN §9.12),
+    /// through `statusFile` + ".model".
+    private(set) var agentModel: String?
+    var onModelChange: ((String?) -> Void)?
+    private var lastModelDate: Date?
     static let statusPollInterval: TimeInterval = 0.25
     static let statusDirectory = ConfigPaths.directory.appendingPathComponent("run")
 
@@ -160,6 +165,11 @@ extension TerminalSession {
         }
         statusFile = url
         lastStatusDate = nil
+        lastModelDate = nil
+        if agentModel != nil {
+            agentModel = nil
+            onModelChange?(nil)
+        }
         let timer = Timer(timeInterval: Self.statusPollInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollStatus() }
         }
@@ -171,7 +181,10 @@ extension TerminalSession {
     fileprivate func removeStatusFile() {
         statusTimer?.invalidate()
         statusTimer = nil
-        if let statusFile { try? FileManager.default.removeItem(at: statusFile) }
+        if let statusFile {
+            try? FileManager.default.removeItem(at: statusFile)
+            try? FileManager.default.removeItem(at: Self.modelFile(for: statusFile))
+        }
         statusFile = nil
     }
 
@@ -179,6 +192,7 @@ extension TerminalSession {
     /// Poppy changed locally (markDoneSeen) isn't overwritten by an old report. The file is
     /// never truncated here, so no report can be lost between reading and clearing.
     private func pollStatus() {
+        pollModel()
         guard let statusFile,
               let date = (try? FileManager.default.attributesOfItem(atPath: statusFile.path))?[.modificationDate] as? Date,
               date != lastStatusDate,
@@ -187,6 +201,27 @@ extension TerminalSession {
         guard let reported = AgentStatus(rawValue: word) else { return }  // empty or mid-write
         lastStatusDate = date
         setStatus(reported)
+    }
+
+    static func modelFile(for statusFile: URL) -> URL {
+        statusFile.deletingLastPathComponent().appendingPathComponent(statusFile.lastPathComponent + ".model")
+    }
+
+    /// Independent of the status file: a model can change while the status stays "working".
+    /// An empty read (mid-write) is retried on the next poll.
+    private func pollModel() {
+        guard let statusFile else { return }
+        let url = Self.modelFile(for: statusFile)
+        guard let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+              date != lastModelDate,
+              let data = try? Data(contentsOf: url) else { return }
+        let model = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return }
+        lastModelDate = date
+        guard model != agentModel else { return }
+        agentModel = model
+        appLog("status: model \(model)")
+        onModelChange?(model)
     }
 
     fileprivate func setStatus(_ new: AgentStatus) {

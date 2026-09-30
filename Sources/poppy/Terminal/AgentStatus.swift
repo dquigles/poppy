@@ -27,6 +27,11 @@ nonisolated enum StatusHooks {
         "[ -f \"$POPPY_STATUS_FILE\" ] && printf %s \(status.rawValue) > \"$POPPY_STATUS_FILE\"; exit 0"
     }
 
+    /// Antigravity's PreInvocation hook: also records the model being called, which picks
+    /// the usage ring's group (DESIGN §9.12). Checks for Poppy before reading stdin, so it
+    /// reads nothing in the Antigravity IDE or desktop app, which share the plugin.
+    static let antigravityInvocationCommand = #"[ -f "$POPPY_STATUS_FILE" ] || exit 0; printf %s working > "$POPPY_STATUS_FILE"; m=$(grep -o '"modelName":"[^"]*"' | head -n 1 | cut -d '"' -f 4); [ -n "$m" ] && printf %s "$m" > "$POPPY_STATUS_FILE.model"; exit 0"#
+
     /// Readies status reporting for `command`'s harness and returns the command to run:
     /// Claude gets `--settings <Poppy's hooks file>` right after the executable word
     /// (nothing global is touched); Codex gets Poppy's entries merged into its global
@@ -236,7 +241,7 @@ nonisolated enum StatusHooks {
         func handler(_ status: AgentStatus) -> [String: Any] { ["type": "command", "command": command(status)] }
         func tool(_ status: AgentStatus) -> [String: Any] { ["matcher": "*", "hooks": [handler(status)]] }
         let hooks: [String: Any] = ["poppy-status": [
-            "PreInvocation": [handler(.working)],
+            "PreInvocation": [["type": "command", "command": antigravityInvocationCommand, "timeout": 5]],
             "PreToolUse": [tool(.working)],
             "PostToolUse": [tool(.working)],
             "Stop": [handler(.done)],

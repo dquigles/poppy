@@ -30,6 +30,9 @@ final class UsageMonitor {
     /// The running command (Codex is asked through it, so `CODEX_HOME=…` applies).
     private var command: String
     private(set) var enabled: Bool
+    /// The model the agent last called (Antigravity's hook reports it); picks the ring's
+    /// window (DESIGN §9.12).
+    private var agentModel: String?
 
     init(command: String, enabled: Bool) {
         self.command = command
@@ -47,7 +50,7 @@ final class UsageMonitor {
     }
 
     static func supports(_ harness: Harness) -> Bool {
-        harness == .claude || harness == .codex
+        harness == .claude || harness == .codex || harness == .antigravity
     }
 
     /// True when the current agent has usage to show and Show Usage is on.
@@ -61,14 +64,21 @@ final class UsageMonitor {
     func setCommand(_ command: String) {
         self.command = command
         harness = Harness(command: command)
+        agentModel = nil
         publish()
         refresh(.event)
+    }
+
+    func setAgentModel(_ model: String?) {
+        guard model != agentModel else { return }
+        agentModel = model
+        publish()
     }
 
     func setEnabled(_ enabled: Bool) {
         self.enabled = enabled
         if enabled {
-            // Turning it back on retries a refused Keychain read (DESIGN §9.7).
+            // Turning it back on retries a refused Keychain read or a silent agy (DESIGN §9.7, §9.12).
             for key in sources.keys where sources[key]?.nextAllowed == .distantFuture {
                 sources[key]?.nextAllowed = .distantPast
             }
@@ -102,7 +112,10 @@ final class UsageMonitor {
                 do { result = .success(try await ClaudeUsage.fetch()) } catch { result = .failure(error) }
             } else {
                 result = await Task.detached { () -> Result<UsageReport, Error> in
-                    do { return .success(try CodexUsage.fetch(command: command)) } catch { return .failure(error) }
+                    do {
+                        return .success(harness == .antigravity ? try AntigravityUsage.fetch(command: command)
+                                                                : try CodexUsage.fetch(command: command))
+                    } catch { return .failure(error) }
                 }.value
             }
             self?.finished(key, harness, result)
@@ -124,8 +137,12 @@ final class UsageMonitor {
             if case UsageError.rateLimited = error {
                 source.nextAllowed = now.addingTimeInterval(source.backoff)
                 source.backoff = min(source.backoff * 2, Self.maxBackoff)
+            } else if case UsageError.signedOut = error {
+                source.nextAllowed = now.addingTimeInterval(60)  // cheap check, no prompt: a sign-in shows soon
             } else if case UsageError.keychainDenied = error {
                 source.nextAllowed = .distantFuture  // until Show Usage is toggled or Poppy relaunches
+            } else if case UsageError.noAnswer = error {
+                source.nextAllowed = .distantFuture  // an expired agy login could open the browser again
             } else {
                 source.nextAllowed = now.addingTimeInterval(Self.failureRetry)
             }
@@ -142,7 +159,8 @@ final class UsageMonitor {
             return
         }
         let source = sources[sourceKey]
-        if let report = source?.report?.current() {
+        if var report = source?.report?.current() {
+            report.ring = report.ringWindow(forModel: agentModel)
             onChange?(report, nil)
         } else if let source, !source.inFlight, source.report != nil, source.failure == nil {
             onChange?(nil, "no current usage reported")  // fetched, but every window has reset

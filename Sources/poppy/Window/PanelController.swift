@@ -140,6 +140,7 @@ final class PanelController: NSObject {
             session.attach(to: host)
             session.onViewReplaced = { [weak self] in self?.refocusAfterRestart() }
             session.onStatusChange = { [weak self] status in self?.statusChanged(status) }
+            session.onModelChange = { [weak self] model in self?.usage.setAgentModel(model) }
         } else {
             let field = NSTextField(frame: NSRect(x: 0, y: host.bounds.height - 24, width: host.bounds.width, height: 24))
             field.placeholderString = "Type here to test focus"
@@ -181,11 +182,11 @@ final class PanelController: NSObject {
         usage.start()
     }
 
-    /// Footer (both windows) and pill ring (the 5-hour one), DESIGN §9.7.
+    /// Footer (both windows) and pill ring (the 5-hour one; Antigravity's model group), DESIGN §9.7, §9.12.
     private func usageChanged(_ report: UsageReport?, reason: String?) {
         expandedView.setUsageVisible(usage.isActive)
         expandedView.usageBar.show(report, reason: reason)
-        pillView.setUsage(report?.short)
+        pillView.setUsage(report?.ring)
     }
 
     private var focusTarget: NSView? { session?.focusView ?? placeholderField }
