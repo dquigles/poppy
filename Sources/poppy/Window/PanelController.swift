@@ -74,6 +74,23 @@ final class PanelController: NSObject {
     /// when that ends if the status is still the same (DESIGN §7.15).
     private var pendingAutoOpen: AgentStatus?
     static let autoOpenKeyGuard: TimeInterval = 0.4
+    /// The system hid the panel (e.g. a Space swipe) and it animates in when shown again
+    /// (DESIGN §7.16). Meanwhile the glass is transparent and the shadow is off.
+    private var awaitingReveal = false
+    /// Re-checks visibility while waiting, in case a "visible" notification is missed.
+    private var revealWatchdog: Timer?
+    /// Bumped by every arm and reveal; a reveal's completion acts only if it's still current.
+    private var revealGeneration = 0
+    /// While the glass scales in, the shadow (which draws the rim) is recomputed every
+    /// frame so the rim follows the glass; stopped at `revealShadowUntil`.
+    private var revealShadowLink: CADisplayLink?
+    private var revealShadowUntil: CFTimeInterval = 0
+    static let revealScale: CGFloat = 0.86
+    static let revealFadeDuration: TimeInterval = 0.18
+    static let revealWatchdogInterval: TimeInterval = 0.5
+    /// The watchdog gives up after this many ticks (screen lock, display sleep).
+    static let revealWatchdogMaxTicks = 20
+    private var revealWatchdogTicks = 0
     /// Set by AppDelegate; the menu shows and changes the hotkey through it (DESIGN §7.10).
     weak var hotKeys: HotKeyManager? {
         didSet { hotKeys?.onRecorderClosed = { [weak self] in self?.refocusIfExpanded() } }
@@ -153,6 +170,9 @@ final class PanelController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelDidBecomeKey),
             name: NSWindow.didBecomeKeyNotification, object: panel)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(panelOcclusionDidChange),
+            name: NSWindow.didChangeOcclusionStateNotification, object: panel)
 
         panel.orderFrontRegardless()
         panel.refreshShadow()
@@ -188,6 +208,7 @@ final class PanelController: NSObject {
     /// `focus: false` (an auto-open with "Focus the Panel" off, DESIGN §7.15) shows the
     /// panel without taking the keyboard; clicking into it (or the hotkey) focuses it.
     func expand(focus: Bool = true) {
+        revealIfArmed()
         guard state == .collapsed, !isAnimating else { return }
         isAnimating = true
         state = .expanded
@@ -248,6 +269,7 @@ final class PanelController: NSObject {
     }
 
     func collapse() {
+        revealIfArmed()
         guard state == .expanded, !isAnimating, !panel.inLiveResize else { return }
         isAnimating = true
         state = .collapsed
@@ -431,6 +453,7 @@ final class PanelController: NSObject {
     // MARK: - Hotkey (DESIGN §11)
 
     func hotkeyPressed() {
+        revealIfArmed()
         guard !isAnimating else { return }
         switch state {
         case .collapsed:
@@ -554,6 +577,146 @@ final class PanelController: NSObject {
 
     @objc private func activeSpaceDidChange(_ notification: Notification) {
         panel.orderFrontRegardless()
+        if awaitingReveal, panel.occlusionState.contains(.visible) { reveal() }
+    }
+
+    // MARK: - Reappearing after a Space swipe (DESIGN §7.16)
+
+    /// The system hides the panel for a whole Space swipe; it only animates back in. Reads
+    /// the current state, so a very fast swipe handled late may not animate (never stuck).
+    @objc private func panelOcclusionDidChange(_ notification: Notification) {
+        if panel.occlusionState.contains(.visible) {
+            if awaitingReveal { reveal() }
+        } else if panel.isVisible, !awaitingReveal {
+            // Not after a real orderOut (isVisible false); Poppy never keeps it ordered out.
+            armReveal()
+        }
+    }
+
+    /// While hidden, make the glass transparent so the first frame shown again is too.
+    /// Not the window alpha: a window at alpha 0 never counts as visible again.
+    private func armReveal() {
+        awaitingReveal = true
+        revealGeneration += 1
+        glass.layer?.removeAnimation(forKey: "reveal")
+        glass.layer?.removeAnimation(forKey: "revealFade")
+        stopRevealShadowTracking()
+        panel.hasShadow = false  // the shadow draws the rim and can't scale with the glass
+        glass.alphaValue = 0
+
+        revealWatchdogTicks = 0
+        let timer = Timer(timeInterval: Self.revealWatchdogInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.revealWatchdogTick() }
+        }
+        timer.tolerance = 0.1
+        RunLoop.main.add(timer, forMode: .common)  // also while a menu is tracking
+        revealWatchdog = timer
+        appLog("reveal: armed")
+    }
+
+    private func revealWatchdogTick() {
+        revealWatchdogTicks += 1
+        if panel.occlusionState.contains(.visible) {
+            if awaitingReveal { reveal() }
+        } else if revealWatchdogTicks >= Self.revealWatchdogMaxTicks {
+            // Long hidden (lock, sleep): the notification, a Space change or a user action reveals it.
+            revealWatchdog?.invalidate()
+            revealWatchdog = nil
+        }
+    }
+
+    /// Expand, collapse and the hotkey play the reveal first, so they never work on a
+    /// transparent panel. Fade only: the window is about to change size, which would
+    /// throw the scale's pivot off center.
+    private func revealIfArmed() {
+        if awaitingReveal { reveal(scale: false) }
+    }
+
+    /// Fade the glass in while it scales up from `revealScale` about its center.
+    private func reveal(scale: Bool = true) {
+        awaitingReveal = false
+        revealGeneration += 1
+        let generation = revealGeneration
+        revealWatchdog?.invalidate()
+        revealWatchdog = nil
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let scales = scale && !reduceMotion
+        var springDuration: TimeInterval = 0
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            MainActor.assumeIsolated { self?.restoreShadowAfterReveal(generation) }
+        }
+        glass.alphaValue = 1
+        if let layer = glass.layer {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = Self.revealFadeDuration
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(fade, forKey: "revealFade")
+
+            if scales {
+                // Critically damped: never past full size, which the window would clip.
+                let spring = CASpringAnimation(keyPath: "transform")
+                spring.mass = 1
+                spring.stiffness = 320
+                spring.damping = 36
+                spring.initialVelocity = 0
+                spring.duration = spring.settlingDuration
+                springDuration = spring.duration
+                // AppKit picks the anchor point, so pivot on the center explicitly.
+                let size = layer.bounds.size
+                let dx = size.width * (0.5 - layer.anchorPoint.x)
+                let dy = size.height * (0.5 - layer.anchorPoint.y)
+                let from = CATransform3DConcat(
+                    CATransform3DConcat(CATransform3DMakeTranslation(-dx, -dy, 0),
+                                        CATransform3DMakeScale(Self.revealScale, Self.revealScale, 1)),
+                    CATransform3DMakeTranslation(dx, dy, 0))
+                spring.fromValue = NSValue(caTransform3D: from)
+                spring.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+                layer.add(spring, forKey: "reveal")
+            }
+        }
+        CATransaction.commit()
+
+        if scales {
+            // The rim is the window shadow: keep it on and let it follow the glass as it
+            // fades and scales, instead of popping in when the spring settles.
+            panel.hasShadow = true
+            revealShadowUntil = CACurrentMediaTime() + springDuration
+            let link = glass.displayLink(target: self, selector: #selector(revealShadowFrame))
+            link.add(to: .main, forMode: .common)
+            revealShadowLink = link
+        }
+
+        // Backup in case the animations are dropped without completing (e.g. a style-mask
+        // change or orderOut in the same turn, when revealed from expand/collapse).
+        let backup = max(Self.revealFadeDuration, springDuration) + 0.05
+        DispatchQueue.main.asyncAfter(deadline: .now() + backup) { [weak self] in
+            self?.restoreShadowAfterReveal(generation)
+        }
+        appLog(scales ? "reveal: play" : reduceMotion ? "reveal: play (reduce motion)" : "reveal: play (fade only)")
+    }
+
+    @objc private func revealShadowFrame(_ link: CADisplayLink) {
+        guard link.timestamp < revealShadowUntil else {
+            stopRevealShadowTracking()
+            panel.refreshShadow()
+            return
+        }
+        panel.invalidateShadow()
+    }
+
+    private func stopRevealShadowTracking() {
+        revealShadowLink?.invalidate()
+        revealShadowLink = nil
+    }
+
+    private func restoreShadowAfterReveal(_ generation: Int) {
+        guard generation == revealGeneration, !awaitingReveal, !panel.hasShadow else { return }
+        panel.hasShadow = true
+        panel.refreshShadow()
     }
 
     @objc private func screenParametersDidChange(_ notification: Notification) {

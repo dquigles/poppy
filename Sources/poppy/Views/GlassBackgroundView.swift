@@ -38,6 +38,7 @@ final class GlassBackgroundView: NSView {
         }
 
         super.init(frame: frame)
+        wantsLayer = true  // the reveal animates this layer (DESIGN §7.16)
         backing.autoresizingMask = [.width, .height]
         addSubview(backing)
         applyCornerRadius()
