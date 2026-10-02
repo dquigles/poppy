@@ -35,7 +35,7 @@ nonisolated enum StatusHooks {
     /// Readies status reporting for `command`'s harness and returns the command to run:
     /// Claude gets `--settings <Poppy's hooks file>` right after the executable word
     /// (nothing global is touched); Codex gets Poppy's entries merged into its global
-    /// config; opencode and Antigravity get a Poppy-owned plugin.
+    /// config and `--no-daemon`; opencode and Antigravity get a Poppy-owned plugin.
     static func prepare(command: String) -> String {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         switch Harness(command: command) {
@@ -51,6 +51,9 @@ nonisolated enum StatusHooks {
                 ("SessionStart", .idle), ("UserPromptSubmit", .working), ("PreToolUse", .working),
                 ("PostToolUse", .working), ("PermissionRequest", .waiting), ("Stop", .done),
             ])
+            // Hooks run in the process that owns the thread. Codex's shared app-server daemon
+            // was started outside Poppy and lacks POPPY_STATUS_FILE, so run Codex in-process.
+            if !command.contains("--no-daemon") { return insertAfterExecutable(command, "--no-daemon") }
         case .antigravity:
             writeAntigravityPlugin(home.appendingPathComponent(".gemini/config/plugins/poppy-status"))
         case .opencode:
