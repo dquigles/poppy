@@ -110,8 +110,8 @@ Poppy needs no special permissions (no Accessibility, Screen Recording or Input 
 ## Uninstall
 
 ```sh
-pkill -x poppy
-rm -rf /Applications/Poppy.app ~/.local/bin/poppy ~/.config/poppy ~/.gemini/config/plugins/poppy-status
+pkill -x poppy; pkill -x poppy-dev
+rm -rf /Applications/Poppy.app ~/.local/bin/poppy ~/.config/poppy ~/.config/poppy-dev ~/.gemini/config/plugins/poppy-status
 ```
 
 Then remove Poppy's hook entries from `~/.codex/hooks.json` if you used Codex: each entry mentions `POPPY_STATUS_FILE`. Also delete `~/.config/opencode/plugins/poppy-status.ts` if it's there.
@@ -119,10 +119,14 @@ Then remove Poppy's hook entries from `~/.codex/hooks.json` if you used Codex: e
 ## Development
 
 ```sh
-swift build        # debug build
-swift run          # run from the terminal, with logs on stderr
-./scripts/bundle.sh   # build build/Poppy.app (ad-hoc signed)
+swift build                   # debug build
+./scripts/dev.sh              # build Poppy Dev and (re)start it; log in build/poppy-dev.log
+./scripts/bundle.sh           # only build "build/Poppy Dev.app"
+"build/Poppy Dev.app/Contents/MacOS/poppy-dev"   # run it, with logs on stderr
+./scripts/bundle.sh --release # build build/Poppy.app (what install.sh installs)
 ```
+
+**Poppy Dev** is a second copy you can run beside your installed Poppy, so you can work on Poppy with an agent inside Poppy: changes are tested in Poppy Dev while the agent keeps running. It has its own settings in `~/.config/poppy-dev/`, no hotkey until you set one, and a purple DEV tag on its pill. Run `./scripts/install.sh` from a normal terminal (it restarts your installed Poppy, and the agent in it) when you want the changes in your real Poppy.
 
 The design and its reasoning live in [`docs/DESIGN.md`](docs/DESIGN.md), and milestone history in [`docs/PROGRESS.md`](docs/PROGRESS.md).
 

@@ -36,6 +36,7 @@ Sources/poppy/
   App/CommandLineClient.swift       `poppy [options] [directory]`: parses flags, hands a request to the app (§9.9)
   Log.swift                         appLog()
   App/AppDelegate.swift             creates and owns everything; quit/cleanup
+  App/AppVariant.swift              Poppy or Poppy Dev (§12.1)
   Config/Config.swift               Config (config.json) + PanelState (state.json) load/save
   Window/GlassPanel.swift           NSPanel subclass
   Window/PanelController.swift      state machine, frames, animation, observers, Poppy menu (§7.10)
@@ -929,14 +930,14 @@ The settings page's Hotkey row (§7.9) is a push-on/push-off button showing the 
 
 ## 12. Packaging (M7)
 
-`scripts/bundle.sh` (bash, `set -euo pipefail`, first `cd`s to the repo root so it can run from anywhere):
+`scripts/bundle.sh` (bash, `set -euo pipefail`, first `cd`s to the repo root so it can run from anywhere). With no argument it builds **Poppy Dev** (`build/Poppy Dev.app`, executable `poppy-dev`, §12.1); `--release` builds `build/Poppy.app` (executable `poppy`), which `install.sh` uses:
 1. `swift build -c release`.
-2. `rm -rf build/Poppy.app`, then `mkdir -p build/Poppy.app/Contents/{MacOS,Resources}`.
-3. Copy `$(swift build -c release --show-bin-path)/poppy` to `Contents/MacOS/poppy`, and `Resources/Info.plist` to `Contents/Info.plist`.
+2. `rm -rf` the app, then `mkdir -p <app>/Contents/{MacOS,Resources}`.
+3. Copy `$(swift build -c release --show-bin-path)/poppy` to `Contents/MacOS/<executable>`, and `Resources/Info.plist` to `Contents/Info.plist`. For Poppy Dev, PlistBuddy then sets `CFBundleExecutable` `poppy-dev`, `CFBundleIdentifier` `io.github.dquigles.poppy.dev`, `CFBundleName` `Poppy Dev`, and adds `PoppyDev` = true.
    - `mkdir -p Contents/Resources/Logos` and copy `Resources/Logos/*.png` and `Resources/Logos/src/LICENSE-lobe-icons` into it (M11; not the `src` SVGs).
    - SwiftTerm's resource bundle (Metal shaders) is **not** copied. The Metal renderer is not enabled, and SwiftTerm deliberately doesn't use `Bundle.module`.
 4. Sign. With a certificate if there is one: `POPPY_SIGN_IDENTITY` (`-` forces ad-hoc), else the first `Apple Development:` or `Developer ID Application:` identity from `security find-identity -v -p codesigning` (by SHA-1), `codesign --force --deep --timestamp=none --sign <identity>`, printing the signing authority; if there's none or it fails, `codesign --force --deep --sign -` (ad-hoc) as before. **Why:** macOS remembers Desktop/Documents/Downloads permissions (TCC) by the app's designated requirement. An ad-hoc signature's is the build's cdhash, so every rebuild looked like a new app and asked again (the user noticed); a certificate's is `identifier "io.github.dquigles.poppy" and anchor apple generic and certificate leaf[subject.CN] = …`, which survives rebuilds (checked on a scratch copy with the user's free Apple Development certificate; no Keychain prompt appeared). The agent's file access counts as Poppy's, since it runs as Poppy's child, which is why Poppy is asked at all. The certificate needs no paid Developer Program membership (a free Apple ID in Xcode creates it); a renewed certificate means one more round of prompts.
-5. Print the app path.
+5. Print the app path (and, for Poppy Dev, the command that runs it).
 
 **`Resources/Info.plist`**
 
@@ -958,10 +959,20 @@ The settings page's Hotkey row (§7.9) is a push-on/push-off button showing the 
 
 `scripts/install.sh` (bash, `set -euo pipefail`, `cd`s to the repo root):
 1. Checks for Swift ≥ 6.2 and the macOS 26 SDK (`xcrun --sdk macosx --show-sdk-version`), and says to install Xcode 26 or its Command Line Tools otherwise.
-2. Runs `bundle.sh`.
-3. `APP_DIR` (default `/Applications` if writable, else `~/Applications`): stops a running Poppy with `pkill -x poppy` (waits up to 5 s; not an AppleScript quit, which would ask for Automation access), replaces `Poppy.app` there with `ditto`.
+2. Runs `bundle.sh --release`.
+3. `APP_DIR` (default `/Applications` if writable, else `~/Applications`): stops a running Poppy with `pkill -x poppy` (waits up to 5 s; not an AppleScript quit, which would ask for Automation access; Poppy Dev runs as `poppy-dev`, so it's spared), replaces `Poppy.app` there with `ditto`.
 4. Writes the `poppy` wrapper to `BIN_DIR` (default `~/.local/bin`, §9.9), mode 755; prints the `export PATH` line if `BIN_DIR` isn't on `PATH`, and a note if `~/.zshrc`/`~/.bashrc` define a `poppy()` function.
 5. `open`s the app.
+
+### 12.1 Poppy Dev (M23)
+A second copy for working on Poppy from inside Poppy: the agent runs in the installed Poppy, builds Poppy Dev with `./scripts/bundle.sh` and runs `"build/Poppy Dev.app/Contents/MacOS/poppy-dev"`, so testing a change never stops the agent doing the work. `install.sh` (run from a normal terminal, since it stops the installed Poppy) updates the real one.
+- **Detection:** `AppVariant.isDev` is true when the bundle's Info.plist has `PoppyDev` = true, or `POPPY_DEV=1` is in the environment (for an unbundled `swift run`). `AppVariant.name` is "Poppy Dev" or "Poppy".
+- **Separate from the installed Poppy:** bundle ID `io.github.dquigles.poppy.dev` (LaunchServices, the `open -a` of §9.9 and TCC permissions treat it as another app; it asks once for Desktop/Documents), executable `poppy-dev` (process name; `install.sh`'s `pkill -x poppy` spares it), and `ConfigPaths.directory` = `~/.config/poppy-dev/` (config, state, its Claude hooks file, `run/` status and request files), so testing never changes the real Poppy's settings, pill position or size.
+- **No hotkey by default:** `Config.defaultHotkey` is `""` for Poppy Dev, and `HotKeyManager` treats an empty spec as none (logs `no hotkey set`; the settings page shows "None" and can record one, saved to its own config). A dev copy never takes the installed Poppy's hotkey.
+- **Shared, by design:** the global status hooks of Codex, Antigravity and opencode (§9.6) do nothing without `POPPY_STATUS_FILE`, which each copy sets for its own agent, so both copies use the same entries. A change to those hooks' text, tested in Poppy Dev, rewrites them for the installed Poppy too.
+- **DEV tag:** a purple capsule (not a status color) with "DEV" (6.5 pt heavy, white), 9 pt high, centered 2 pt above the pill's bottom edge; it takes no clicks, drags or drops and isn't an accessibility element. The menu bar tooltip, "Quit Poppy Dev" and the startup log line use `AppVariant.name`.
+- `scripts/dev.sh` rebuilds it (`bundle.sh`), stops a running `poppy-dev` (waits up to 5 s), and starts the new one with `nohup` in the background, stdout/stderr to `build/poppy-dev.log`; it fails with the log if the process is gone after 1 s. `--stop` only stops it. Claude Code sessions run it after each code change (CLAUDE.md), so the user tests on the DEV pill.
+- No `poppy` command is installed for it; `"build/Poppy Dev.app/Contents/MacOS/poppy-dev" --cli <args>` works the same way (§9.9).
 
 ## 13. Milestones (each builds and runs on its own)
 
@@ -989,6 +1000,7 @@ The settings page's Hotkey row (§7.9) is a push-on/push-off button showing the 
 | M20 | Antigravity usage meter: `AntigravityUsage` (`agy -p /usage --output-format json`), per-group weekly windows named Gemini / Claude/GPT, the ring following the model in use via a `.model` file written by the `PreInvocation` hook (§9.12) | — |
 | M21 | Claude usage from `claude -p /usage --output-format json --no-session-persistence --setting-sources project` in a temp folder (text parsed), replacing the Keychain token + OAuth endpoint; no fallback (§9.13) | — |
 | M22 | `Views/SettingsView.swift`; the settings page in the expanded view (Agent, Working directory, Hotkey, Pill size, Usage meters, Agent status, Auto-Open, Edit config.json…), opened by "Settings…" or ⌘, (from the pill with the expand animation), with "Settings" and Done in the header; Pill Size, Auto-Open, Show Usage and Set Hotkey leave the menu; the hotkey recorder window is replaced by an inline shortcut field (`Hotkey/HotKeyRecorder.swift` removed) (§7.9, §7.10, §6.2, §11.2) | — |
+| M23 | `App/AppVariant.swift`; `bundle.sh` builds Poppy Dev by default (`--release` for Poppy.app, used by `install.sh`): own bundle ID, `poppy-dev` executable, `~/.config/poppy-dev/`, no default hotkey, DEV tag on the pill (§12.1) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).

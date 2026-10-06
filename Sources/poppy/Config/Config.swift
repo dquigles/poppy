@@ -1,8 +1,9 @@
 import Foundation
 
-/// Files live in ~/.config/poppy/ (DESIGN §8).
+/// Files live in ~/.config/poppy/, or ~/.config/poppy-dev/ for Poppy Dev (DESIGN §8, §12.1).
 nonisolated enum ConfigPaths {
-    static let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config/poppy")
+    static let directory = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent(AppVariant.isDev ? ".config/poppy-dev" : ".config/poppy")
     static let config = directory.appendingPathComponent("config.json")
     static let state = directory.appendingPathComponent("state.json")
 
@@ -16,7 +17,8 @@ nonisolated enum ConfigPaths {
 nonisolated struct Config: Codable, Sendable {
     static let defaultCommand = "claude"
     static let defaultCwd = "~"
-    static let defaultHotkey = "ctrl+opt+space"
+    /// Poppy Dev has none by default, so it never takes the installed Poppy's (DESIGN §12.1).
+    static let defaultHotkey = AppVariant.isDev ? "" : "ctrl+opt+space"
 
     var command: String
     var cwd: String

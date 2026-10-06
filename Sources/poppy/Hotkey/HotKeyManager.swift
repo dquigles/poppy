@@ -22,6 +22,11 @@ final class HotKeyManager {
 
     init(spec: String, action: @escaping @MainActor () -> Void) {
         hotKey = GlobalHotKey(action: action)
+        // An empty spec means no hotkey (Poppy Dev's default, DESIGN §12.1); one can still be recorded.
+        guard !spec.trimmingCharacters(in: .whitespaces).isEmpty else {
+            appLog("no hotkey set")
+            return
+        }
         var combo = HotKeyCombo(spec: spec)
         if combo == nil {
             appLog("invalid hotkey \"\(spec)\", using \(Config.defaultHotkey)")

@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingRequests: [LaunchRequest] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        appLog("Poppy started (pid \(ProcessInfo.processInfo.processIdentifier))")
+        appLog("\(AppVariant.name) started (pid \(ProcessInfo.processInfo.processIdentifier))")
         config = Config.load()
         LaunchRequest.removeStaleFiles()
         // Start the requested agent in the requested directory (the last request's, if
@@ -87,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.title = "P"  // never leave an invisible, unclickable item
                 appLog("status item: logo missing, using text")
             }
-            button.toolTip = "Poppy"
+            button.toolTip = AppVariant.name
         }
         item.menu = menu
         appLog("status item created")

@@ -20,7 +20,7 @@ if (( ${sdk_major:-0} < 26 )); then
     fail "The macOS 26 SDK is needed (found ${sdk_major:-none}). Install Xcode 26 or its Command Line Tools."
 fi
 
-./scripts/bundle.sh
+./scripts/bundle.sh --release
 
 # /Applications if writable, otherwise ~/Applications.
 if [[ -z "${APP_DIR:-}" ]]; then
@@ -31,6 +31,7 @@ mkdir -p "$APP_DIR"
 
 # Stop a running Poppy so the new build replaces it (its agent gets SIGHUP when the
 # terminal closes). A signal, not an AppleScript quit, which would ask for Automation access.
+# Poppy Dev runs as poppy-dev, so it keeps running (DESIGN §12.1).
 if pgrep -xq poppy; then
     echo "Stopping the running Poppy…"
     pkill -x poppy || true

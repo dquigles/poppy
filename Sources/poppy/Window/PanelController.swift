@@ -835,7 +835,7 @@ final class PanelController: NSObject {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Quit Poppy", action: #selector(quit), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Quit \(AppVariant.name)", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
     }

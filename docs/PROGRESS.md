@@ -4,9 +4,10 @@ Resume guide: read docs/DESIGN.md (source of truth), then this file.
 
 Workflow per milestone:
 1. Implement it and run `swift build` until clean.
-2. The user runs the manual test.
-3. A goldfish reviewer reviews `git diff` against DESIGN.md.
-4. Fix valid findings, update this file, and commit.
+2. `./scripts/dev.sh`; the user runs the manual test in Poppy Dev.
+3. Fix what the test finds, update DESIGN.md and this file, and commit when the user says so.
+
+(Until 2026-10-06 milestones also went through "goldfish" subagent design and code reviews; the user dropped that workflow as too costly for what it produced. Older notes below still mention it.)
 
 ## Status
 | M | Milestone | Status |
@@ -32,7 +33,8 @@ Workflow per milestone:
 | M19 | Antigravity CLI (`agy`) as a built-in agent, with status via a Poppy-owned plugin (§9.11); Gemini CLI support removed | done |
 | M20 | Antigravity usage meter: weekly Gemini and Claude/GPT limits in the footer; the ring follows the model in use (§9.12) | done |
 | M21 | Claude usage from Claude Code's own `/usage` (`claude -p`), replacing the Keychain token + OAuth endpoint (§9.13) | done |
-| M22 | Settings page in the expanded view: Agent, Working directory, Hotkey (inline shortcut field), Pill size, Usage meters, Agent status, Auto-Open, Edit config.json…; "Settings" and Done replace the directory name in the header; opened by Settings… or ⌘, with the pill → expanded animation; Pill Size, Auto-Open, Show Usage and Set Hotkey leave the menu (§7.9, §11.2) | awaiting manual test |
+| M22 | Settings page in the expanded view: Agent, Working directory, Hotkey (inline shortcut field), Pill size, Usage meters, Agent status, Auto-Open, Edit config.json…; "Settings" and Done replace the directory name in the header; opened by Settings… or ⌘, with the pill → expanded animation; Pill Size, Auto-Open, Show Usage and Set Hotkey leave the menu (§7.9, §11.2) | done |
+| M23 | Poppy Dev: `./scripts/bundle.sh` builds a second copy (own bundle ID, `poppy-dev` executable, `~/.config/poppy-dev/`, no default hotkey, purple DEV tag on the pill) that runs beside the installed Poppy, so Poppy can be worked on from inside Poppy; `--release` builds Poppy.app for `install.sh` (§12.1) | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -141,3 +143,4 @@ Workflow per milestone:
 - Signing (2026-09-30): `bundle.sh` signs with an Apple Development / Developer ID certificate when one exists (else ad-hoc), so macOS keeps Poppy's Desktop/Documents permissions across rebuilds; ad-hoc builds had a new cdhash identity each time and were asked again (the user noticed the prompts).
 - Multi-session dropped (2026-10-06): the first multi-session attempt (old M22 sessions in the model, M23 tabs/shortcuts/confirm strip, M24 session holders `poppy --hold` and saved sessions, M25 WIP close-to-menu-bar + settings page; about 6,900 lines over three days) was reverted at the user's request: the user still wants several sessions, but not that implementation. It is kept, unmerged, on the branch `archive/multi-session` (with its PRD `docs/prds/multi-session-2026-10-02.md` and design records) for reference; don't resume from it. A future attempt should start much smaller (one milestone, no holder daemon). Milestone numbers from M22 on are reused.
 - M22 (2026-10-06): the settings page, ported from the archived M25 WIP without its multi-session parts and without Close Poppy to the menu bar (that existed so sessions stayed attached). Claude's calls, open to change: Done/Esc/Return/⌘, leave the page; collapsing, `poppy … show`, a drop or paste, and an auto-open (not while Settings… is still expanding from the pill) close it; Restart Agent and agent/folder changes without show keep it; done isn't marked seen under the page. Second pass (user's request): "Settings" takes over the directory name in the header (with Done there, the page's own title row removed); every setting a user would change is on the page, each with the fitting control. Claude's calls, open to change: Agent and Working directory are on the page too (pop-ups; they also stay in the menu for quick switching); Agent status (`statusHooks`) gets a switch, applied at the next agent start rather than restarting the agent; switches for features, checkboxes for Auto-Open's options with focus nested and enabled only when one is on; an inline shortcut field replaces the recorder window; custom agents stay in config.json behind "Edit config.json…".
+- M23 (2026-10-06): Poppy Dev, asked for by the user to edit Poppy from inside Poppy ("exactly as you said it, with a small dev tag"). Claude's calls, open to change: `bundle.sh` defaults to the dev copy (the everyday build while developing) and `--release` builds Poppy.app; the dev executable is `poppy-dev` so `install.sh`'s `pkill -x poppy` spares it; no `poppy` command for the dev copy; the tag is purple so it never reads as a status color; global agent hooks stay shared (they are inert without `POPPY_STATUS_FILE`). Smoke test: Poppy Dev ran beside the user's Poppy, wrote `~/.config/poppy-dev/`, its own Claude hooks file, and logged `no hotkey set`.

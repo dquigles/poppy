@@ -52,9 +52,22 @@ final class PillView: NSView {
         ring.isHidden = true
         layer?.addSublayer(ring)
         registerForDraggedTypes(Attachments.dropTypes)  // drop onto the pill (DESIGN §9.10)
+        if AppVariant.isDev { addDevTag() }
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         update(harness: harness, title: title)
+    }
+
+    /// A small "DEV" capsule at the bottom of the pill, so Poppy Dev is never mistaken for
+    /// the installed Poppy (DESIGN §12.1).
+    private func addDevTag() {
+        let tag = DevTag()
+        tag.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(tag)
+        NSLayoutConstraint.activate([
+            tag.centerXAnchor.constraint(equalTo: centerXAnchor),
+            tag.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+        ])
     }
 
     /// Shows `harness`'s logo; also called when the agent is switched (DESIGN §9.5).
@@ -233,4 +246,37 @@ struct WindowDrag {
         cancel()
         return wasDrag
     }
+}
+
+/// Poppy Dev's pill tag: "DEV" in white on a purple capsule (not a status color). It never
+/// takes clicks, drags or drops; they go to the pill.
+private final class DevTag: NSView {
+    private let label = NSTextField(labelWithString: "DEV")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.systemPurple.cgColor
+        layer?.cornerCurve = .continuous
+        label.font = .systemFont(ofSize: 6.5, weight: .heavy)
+        label.textColor = .white
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            widthAnchor.constraint(equalTo: label.widthAnchor, constant: 6),
+            heightAnchor.constraint(equalToConstant: 9),
+        ])
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
