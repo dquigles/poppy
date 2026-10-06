@@ -58,8 +58,27 @@ final class GlassPanel: NSPanel {
         return false
     }
 
+    /// The settings page is shown: plain Esc and Return close it (DESIGN §6.2, §7.9).
+    var isShowingSettings: (() -> Bool)?
+    var onCloseSettings: (() -> Void)?
+    /// ⌘, opens or closes the settings page.
+    var onToggleSettings: (() -> Void)?
+
+    private static let settingsCloseKeyCodes: Set<UInt16> = [53, 36, 76]  // Esc, Return, keypad Enter
+
+    /// Plain Esc or Return while the settings page shows.
+    private func closesSettings(_ event: NSEvent) -> Bool {
+        event.type == .keyDown && isShowingSettings?() == true
+            && event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty
+            && Self.settingsCloseKeyCodes.contains(event.keyCode)
+    }
+
     override func sendEvent(_ event: NSEvent) {
         if guarded(event) { return }
+        if closesSettings(event) {
+            onCloseSettings?()
+            return
+        }
         super.sendEvent(event)
     }
 
@@ -130,10 +149,14 @@ final class GlassPanel: NSPanel {
     }
 
     /// Poppy is never the active app and has no main menu, so menu key
-    /// equivalents never fire. Route Cmd-C/V/A to the first responder (DESIGN §6.2).
+    /// equivalents never fire. Route Cmd-C/V/A to the first responder, and ⌘, to the settings page (DESIGN §6.2).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // ⌘ shortcuts (e.g. ⌘V into a permission prompt) are covered by the key guard too.
         if ignoringKeys { return true }
+        if closesSettings(event) {
+            onCloseSettings?()
+            return true
+        }
         guard event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command] else {
             return super.performKeyEquivalent(with: event)
         }
@@ -142,6 +165,9 @@ final class GlassPanel: NSPanel {
         case "c": action = #selector(NSText.copy(_:))
         case "v": action = #selector(NSText.paste(_:))
         case "a": action = #selector(NSResponder.selectAll(_:))
+        case ",":
+            onToggleSettings?()
+            return true
         default: return super.performKeyEquivalent(with: event)
         }
         return NSApp.sendAction(action, to: nil, from: self)

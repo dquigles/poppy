@@ -1,8 +1,8 @@
 import AppKit
 import Carbon
 
-/// Owns the global hotkey, the current combo, and the "Set Hotkey" recorder
-/// (DESIGN §11, §11.2). Owned by AppDelegate.
+/// Owns the global hotkey and the current combo; the settings page's shortcut field
+/// records a new one through it (DESIGN §11, §11.2). Owned by AppDelegate.
 final class HotKeyManager {
     enum RecordResult {
         case saved
@@ -12,15 +12,13 @@ final class HotKeyManager {
     }
 
     private let hotKey: GlobalHotKey?
-    /// The combo the user chose. Registered whenever the recorder isn't open
+    /// The combo the user chose. Registered whenever no recording is in progress
     /// (unless registration failed at launch).
     private(set) var current: HotKeyCombo?
-    private var recorder: HotKeyRecorder?
-    /// True while the "Set Hotkey" window is open (auto-open waits, DESIGN §7.15).
-    var isRecording: Bool { recorder != nil }
-    /// Called after the recorder closes via Esc or a save (not when the user clicked
-    /// elsewhere); PanelController refocuses the terminal if expanded.
-    var onRecorderClosed: (() -> Void)?
+    /// True while the shortcut field is recording (auto-open waits, DESIGN §7.15).
+    private(set) var isRecording = false
+    /// Called after every recording ends, so the settings page shows the current combo.
+    var onComboChanged: (() -> Void)?
 
     init(spec: String, action: @escaping @MainActor () -> Void) {
         hotKey = GlobalHotKey(action: action)
@@ -37,45 +35,44 @@ final class HotKeyManager {
     /// False only if the Carbon event handler couldn't be installed.
     var canRecord: Bool { hotKey != nil }
 
-    /// Opens the recorder (or brings it forward). The current hotkey is suspended
-    /// while it's open so pressing it can be recorded instead of toggling the panel.
-    func beginRecording() {
-        guard let hotKey else { return }
-        if let recorder {
-            recorder.show()
-            return
+    /// Suspends the current hotkey so pressing it can be recorded instead of toggling
+    /// the panel. Returns false if hotkeys are unavailable.
+    func beginRecording() -> Bool {
+        guard let hotKey else { return false }
+        if !isRecording {
+            isRecording = true
+            hotKey.unregister()
         }
-        hotKey.unregister()
-        let recorder = HotKeyRecorder(
-            current: current,
-            onRecord: { [weak self] combo in self?.record(combo) ?? .failed("Hotkeys are unavailable.") },
-            onClose: { [weak self] refocus in self?.recorderClosed(refocus: refocus) })
-        self.recorder = recorder
-        recorder.show()
+        return true
     }
 
-    private func record(_ combo: HotKeyCombo) -> RecordResult {
+    /// Registers and saves `combo`. On `.saved` the recording ends; otherwise it stays
+    /// open so the field can show the message.
+    func record(_ combo: HotKeyCombo) -> RecordResult {
         guard let hotKey else { return .failed("Hotkeys are unavailable.") }
         let status = hotKey.register(combo)
         guard status == noErr else {
             return .failed("\(combo.displayString) couldn't be registered (OSStatus \(status)). Try another.")
         }
         current = combo
-        if Config.saveHotkey(combo.spec) { return .saved }
-        // The recorder stays open to show the error; keep the hotkey suspended until it
-        // closes (recorderClosed registers `current`).
+        if Config.saveHotkey(combo.spec) {
+            endRecording()
+            return .saved
+        }
+        // Keep the hotkey suspended until the recording ends (endRecording registers `current`).
         hotKey.unregister()
         return .notSaved
     }
 
-    /// Restores the current combo if the recorder closed without registering it
-    /// (cancelled, or the last attempt failed).
-    private func recorderClosed(refocus: Bool) {
-        recorder = nil
+    /// Restores the current combo if it isn't registered (cancelled, or the last attempt
+    /// failed).
+    func endRecording() {
+        guard isRecording else { return }
+        isRecording = false
         if let hotKey, let current, hotKey.registered != current,
            hotKey.register(current) != noErr {
-            self.current = nil  // don't show a hotkey in the menu that doesn't work
+            self.current = nil  // don't show a hotkey that doesn't work
         }
-        if refocus { onRecorderClosed?() }
+        onComboChanged?()
     }
 }

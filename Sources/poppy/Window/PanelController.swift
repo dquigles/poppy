@@ -16,7 +16,7 @@ final class PanelController: NSObject {
         var top: Bool
     }
 
-    /// Pill diameter presets, in the Pill Size menu (DESIGN §7.14).
+    /// Pill diameter presets, on the settings page (DESIGN §7.14).
     static let pillPresets = PanelSizes.pillPresets
     static let defaultPillDiameter: CGFloat = 44
     static let expandedCornerRadius: CGFloat = 20
@@ -91,9 +91,13 @@ final class PanelController: NSObject {
     /// The watchdog gives up after this many ticks (screen lock, display sleep).
     static let revealWatchdogMaxTicks = 20
     private var revealWatchdogTicks = 0
-    /// Set by AppDelegate; the menu shows and changes the hotkey through it (DESIGN §7.10).
+    /// The settings page is shown in place of the terminal (DESIGN §7.9).
+    private(set) var settingsShown = false
+    /// Settings… from the pill: the expand is still running (auto-opens leave the page alone).
+    private var openingSettings = false
+    /// Set by AppDelegate; the settings page shows and records the hotkey through it (DESIGN §7.9).
     weak var hotKeys: HotKeyManager? {
-        didSet { hotKeys?.onRecorderClosed = { [weak self] in self?.refocusIfExpanded() } }
+        didSet { hotKeys?.onComboChanged = { [weak self] in self?.refreshSettings() } }
     }
 
     init(config: Config, session: TerminalSession?) {
@@ -151,6 +155,40 @@ final class PanelController: NSObject {
 
         panel.contentView = glass
         panel.allowsKey = false
+        panel.isShowingSettings = { [weak self] in self?.settingsShown == true }
+        panel.onCloseSettings = { [weak self] in self?.closeSettings() }
+        panel.onToggleSettings = { [weak self] in self?.toggleSettings() }
+        let settings = expandedView.settingsView
+        settings.onPillPreset = { [weak self] index in
+            guard let self, Self.pillPresets.indices.contains(index) else { return }
+            setPillDiameter(Self.pillPresets[index].diameter)
+            refreshSettings()
+        }
+        settings.onAgent = { [weak self] index in
+            guard let self, menuAgents.indices.contains(index) else { return }
+            switchAgent(to: menuAgents[index])
+        }
+        settings.onDirectory = { [weak self] path in self?.openDirectory(path, show: false) }
+        settings.onChooseFolder = { [weak self] in self?.pickFolder(show: false) }
+        settings.onStatusHooks = { [weak self] on in
+            self?.setStatusHooks(on)
+            self?.refreshSettings()
+        }
+        settings.onEditConfig = { NSWorkspace.shared.open(ConfigPaths.config) }
+        settings.hotkeyField.onBegin = { [weak self] in self?.hotKeys?.beginRecording() ?? false }
+        settings.hotkeyField.onRecord = { [weak self] combo in
+            self?.hotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
+        }
+        settings.hotkeyField.onEnd = { [weak self] in self?.hotKeys?.endRecording() }
+        expandedView.header.onDone = { [weak self] in self?.closeSettings() }
+        settings.onAutoOpen = { [weak self] key, on in
+            self?.setAutoOpen(key, on)
+            self?.refreshSettings()
+        }
+        settings.onShowUsage = { [weak self] on in
+            self?.setShowUsage(on)
+            self?.refreshSettings()
+        }
 
         // Selector-based observers are removed automatically when self deallocates.
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -189,13 +227,8 @@ final class PanelController: NSObject {
         pillView.setUsage(report?.ring)
     }
 
-    private var focusTarget: NSView? { session?.focusView ?? placeholderField }
-
-    /// After the hotkey recorder closes over the expanded panel, give the terminal key back.
-    private func refocusIfExpanded() {
-        guard state == .expanded, !isAnimating else { return }
-        panel.makeKeyAndOrderFront(nil)
-        if let focusTarget { panel.makeFirstResponder(focusTarget) }
+    private var focusTarget: NSView? {
+        settingsShown ? expandedView.settingsView : session?.focusView ?? placeholderField
     }
 
     /// After Restart Agent swaps the terminal view, keep typing going to the new one.
@@ -272,6 +305,7 @@ final class PanelController: NSObject {
     func collapse() {
         revealIfArmed()
         guard state == .expanded, !isAnimating, !panel.inLiveResize else { return }
+        closeSettings(animated: false, markSeen: false)  // the next expand shows the terminal
         isAnimating = true
         state = .collapsed
         autoOpenedFor = nil
@@ -318,7 +352,7 @@ final class PanelController: NSObject {
             if config.autoOpenOnInput { autoOpen(for: .waiting) } else { appLog("auto-open: off for input") }
         case .done:
             usage.refresh(.event)  // a turn just used some
-            if state == .expanded, panel.isKeyWindow {
+            if state == .expanded, panel.isKeyWindow, !settingsShown {
                 session?.markDoneSeen()  // the user is looking at it
             } else if config.autoOpenOnDone {
                 autoOpen(for: .done)
@@ -333,7 +367,7 @@ final class PanelController: NSObject {
     /// "done" goes back to idle whenever the panel takes the keyboard: expand, the hotkey,
     /// an auto-open, or a click into it.
     @objc private func panelDidBecomeKey(_ notification: Notification) {
-        session?.markDoneSeen()
+        if !settingsShown { session?.markDoneSeen() }  // not seen under the settings page
         // During an expand the fade completion installs it; this covers an unfocused
         // auto-open that the user clicks into later.
         if state == .expanded, !isAnimating { installClickOutsideMonitor() }  // idempotent
@@ -366,7 +400,11 @@ final class PanelController: NSObject {
             appLog("auto-open: skipped (recording a hotkey)")
             return
         }
-        appLog("auto-open: \(state == .collapsed ? "expanding" : panel.isKeyWindow ? "already focused" : "focusing")")
+        // The agent needs the user: the settings page gives way to the terminal (not while
+        // Settings… is still opening from the pill). DESIGN §7.15.
+        let closesSettings = settingsShown && state == .expanded && !openingSettings
+        appLog("auto-open: \(state == .collapsed ? "expanding" : closesSettings ? "closed settings" : panel.isKeyWindow ? "already focused" : "focusing")")
+        if closesSettings { closeSettings(markSeen: panel.isKeyWindow) }
         switch state {
         case .collapsed:
             expand(focus: config.autoOpenFocus)
@@ -412,11 +450,14 @@ final class PanelController: NSObject {
 
     private func finishAnimation() {
         isAnimating = false
-        defer { retryPendingAutoOpen() }
         if needsReclamp {
             needsReclamp = false
             reclamp()
         }
+        // A report that arrived during Settings…' own expand leaves the page open; later
+        // ones close it.
+        retryPendingAutoOpen()
+        openingSettings = false
     }
 
     private func animateFrame(to target: NSRect, completion: @escaping @MainActor () -> Void) {
@@ -776,54 +817,14 @@ final class PanelController: NSObject {
         directoryItem.isEnabled = session != nil
         menu.addItem(directoryItem)
 
-        // One line for both: "Set Hotkey (⌃⌥Space)", or just "Set Hotkey" when none is registered.
-        var setTitle = "Set Hotkey"
-        if let combo = hotKeys?.current { setTitle += " (\(combo.displayString))" }
-        let pillSizeItem = NSMenuItem(title: "Pill Size", action: nil, keyEquivalent: "")
-        let pillSizeMenu = NSMenu()
-        pillSizeMenu.autoenablesItems = false
-        for preset in Self.pillPresets {
-            let item = NSMenuItem(title: preset.name, action: #selector(selectPillSize(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = Int(preset.diameter)
-            item.state = preset.diameter == pillDiameter ? .on : .off
-            item.isEnabled = !isAnimating
-            pillSizeMenu.addItem(item)
-        }
-        pillSizeItem.submenu = pillSizeMenu
-        menu.addItem(pillSizeItem)
+        menu.addItem(.separator())
 
-        let autoOpenItem = NSMenuItem(title: "Auto-Open", action: nil, keyEquivalent: "")
-        let autoOpenMenu = NSMenu()
-        autoOpenMenu.autoenablesItems = false
-        for (title, key, on) in [("When Input Is Needed", "autoOpenOnInput", config.autoOpenOnInput),
-                                 ("When Done", "autoOpenOnDone", config.autoOpenOnDone)] {
-            let item = NSMenuItem(title: title, action: #selector(toggleAutoOpen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = key
-            item.state = on ? .on : .off
-            item.isEnabled = session != nil && config.statusHooks
-            autoOpenMenu.addItem(item)
-        }
-        autoOpenMenu.addItem(.separator())
-        let focusItem = NSMenuItem(title: "Focus the Panel", action: #selector(toggleAutoOpen(_:)), keyEquivalent: "")
-        focusItem.target = self
-        focusItem.representedObject = "autoOpenFocus"
-        focusItem.state = config.autoOpenFocus ? .on : .off
-        focusItem.isEnabled = session != nil && config.statusHooks
-        autoOpenMenu.addItem(focusItem)
-        autoOpenItem.submenu = autoOpenMenu
-        menu.addItem(autoOpenItem)
-
-        let usageItem = NSMenuItem(title: "Show Usage", action: #selector(toggleShowUsage), keyEquivalent: "")
-        usageItem.target = self
-        usageItem.state = config.showUsage ? .on : .off
-        menu.addItem(usageItem)
-
-        let setHotKey = NSMenuItem(title: setTitle, action: #selector(setHotKey), keyEquivalent: "")
-        setHotKey.target = self
-        setHotKey.isEnabled = hotKeys?.canRecord == true
-        menu.addItem(setHotKey)
+        // Pill size, Auto-Open, usage and the hotkey live on the settings page (DESIGN §7.9).
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
+        settingsItem.keyEquivalentModifierMask = .command  // a hint; GlassPanel handles ⌘, (§6.2)
+        settingsItem.target = self
+        settingsItem.isEnabled = !isAnimating
+        menu.addItem(settingsItem)
 
         menu.addItem(.separator())
 
@@ -892,6 +893,11 @@ final class PanelController: NSObject {
     /// The system folder picker. Poppy is activated only while it's open (it can't take
     /// keyboard input otherwise), then the previous app is activated again (DESIGN §9.8).
     @objc private func chooseFolder() {
+        pickFolder(show: true)
+    }
+
+    /// `show: false` from the settings page: the page stays and gets the keyboard back.
+    private func pickFolder(show: Bool) {
         let previous = NSWorkspace.shared.frontmostApplication
         let picker = NSOpenPanel()
         picker.canChooseDirectories = true
@@ -911,8 +917,8 @@ final class PanelController: NSObject {
                     NSApp.yieldActivation(to: previous)
                     previous.activate()
                 }
-                guard response == .OK, let url = picker.url else { return }
-                self?.openDirectory(url.path, show: true)
+                if let url = picker.url, response == .OK { self?.openDirectory(url.path, show: show) }
+                self?.refocusSettings()
             }
         }
     }
@@ -935,9 +941,7 @@ final class PanelController: NSObject {
                              ("autoOpenFocus", request.autoOpenFocus)] {
             if let value { setAutoOpen(key, value) }
         }
-        if let showUsage = request.showUsage, showUsage != config.showUsage {
-            toggleShowUsage()
-        }
+        if let showUsage = request.showUsage { setShowUsage(showUsage) }
 
         var directory = workingDirectory
         if let requested = request.directory {
@@ -952,8 +956,10 @@ final class PanelController: NSObject {
             }
         }
         changeAgent(command: request.command ?? config.command, directory: directory)
+        refreshSettings()
 
         guard request.show, !isAnimating else { return }
+        closeSettings()  // the user wants the agent
         if state == .collapsed {
             expand()
         } else {
@@ -1008,11 +1014,7 @@ final class PanelController: NSObject {
         guard session != nil, !AgentCatalog.same(profile.command, config.command) else { return }
         appLog("switching agent to \(profile.name)")
         changeAgent(command: profile.command, directory: workingDirectory)
-    }
-
-    @objc private func toggleAutoOpen(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String else { return }
-        setAutoOpen(key, sender.state != .on)
+        refreshSettings()
     }
 
     /// Sets and saves one Auto-Open flag (DESIGN §7.15).
@@ -1029,8 +1031,9 @@ final class PanelController: NSObject {
         }
     }
 
-    @objc private func toggleShowUsage() {
-        config.showUsage.toggle()
+    private func setShowUsage(_ on: Bool) {
+        guard on != config.showUsage else { return }
+        config.showUsage = on
         appLog("usage: showUsage = \(config.showUsage)")
         usage.setEnabled(config.showUsage)
         if !Config.saveValue(config.showUsage, forKey: "showUsage") {
@@ -1038,12 +1041,101 @@ final class PanelController: NSObject {
         }
     }
 
-    @objc private func selectPillSize(_ sender: NSMenuItem) {
-        setPillDiameter(CGFloat(sender.tag))
+    // MARK: - Settings page (DESIGN §7.9)
+
+    @objc private func openSettingsFromMenu() {
+        openSettings()
     }
 
-    @objc private func setHotKey() {
-        hotKeys?.beginRecording()
+    /// ⌘, in the panel.
+    private func toggleSettings() {
+        guard !isAnimating else {
+            NSSound.beep()
+            return
+        }
+        if settingsShown { closeSettings() } else { openSettings() }
+    }
+
+    /// From the pill: the pill grows into the page. From the open panel: the terminal
+    /// crossfades to it.
+    private func openSettings() {
+        revealIfArmed()
+        guard !isAnimating else { return }
+        refreshSettings()
+        if settingsShown {
+            panel.makeKeyAndOrderFront(nil)
+            panel.makeFirstResponder(expandedView.settingsView)
+            return
+        }
+        settingsShown = true
+        appLog("settings: shown")
+        if state == .collapsed {
+            expandedView.setSettingsVisible(true, animated: false)
+            openingSettings = true
+            expand()
+        } else {
+            expandedView.setSettingsVisible(true, animated: true)
+            panel.makeKeyAndOrderFront(nil)
+            panel.makeFirstResponder(expandedView.settingsView)
+        }
+    }
+
+    /// Back to the terminal, which gets the first responder back (ready for when the panel
+    /// is key). `markSeen: false` when collapsing: the user never looked at the agent.
+    private func closeSettings(animated: Bool = true, markSeen: Bool = true) {
+        guard settingsShown else { return }
+        expandedView.settingsView.hotkeyField.cancel()
+        settingsShown = false
+        expandedView.setSettingsVisible(false, animated: animated && state == .expanded)
+        appLog("settings: closed")
+        guard state == .expanded else { return }
+        if let focusTarget { panel.makeFirstResponder(focusTarget) }
+        if markSeen, panel.isKeyWindow { session?.markDoneSeen() }
+    }
+
+    /// After the folder picker gives activation back, the page takes the keyboard again.
+    private func refocusSettings() {
+        guard settingsShown, state == .expanded, !isAnimating else { return }
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(expandedView.settingsView)
+    }
+
+    /// The page's controls from the current settings (also after a change was refused).
+    /// The agent and directory lists are the same as the menu's (DESIGN §9.5, §9.8).
+    private func refreshSettings() {
+        menuAgents = agents.profiles(for: config)
+        agents.refreshIfNeeded(menuAgents)
+        let agentChoices = menuAgents.map { profile in
+            let installed = agents.isInstalled(profile) ?? true
+            let current = AgentCatalog.same(profile.command, config.command)
+            return SettingsModel.Agent(title: installed ? profile.name : "\(profile.name) (not installed)",
+                                       image: HarnessLogo.image(for: Harness(command: profile.command), points: 16),
+                                       enabled: session != nil && (installed || current))
+        }
+        let directories = ([workingDirectory] + recentDirectories.filter { $0 != workingDirectory })
+            .filter { Self.isDirectory($0) }
+            .prefix(Self.maxRecentDirectories)
+        let preset = Self.pillPresets.firstIndex { $0.diameter == pillDiameter } ?? 0
+        expandedView.settingsView.update(SettingsModel(
+            agents: agentChoices,
+            currentAgent: menuAgents.firstIndex { AgentCatalog.same($0.command, config.command) },
+            directories: Array(directories),
+            pillPresets: Self.pillPresets.map(\.name), pillPreset: preset,
+            showUsage: config.showUsage, statusHooks: config.statusHooks,
+            autoOpenOnInput: config.autoOpenOnInput, autoOpenOnDone: config.autoOpenOnDone,
+            autoOpenFocus: config.autoOpenFocus,
+            hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true))
+    }
+
+    /// Saves `statusHooks`; the running agent keeps its hooks until it restarts (DESIGN §9.6).
+    private func setStatusHooks(_ on: Bool) {
+        guard on != config.statusHooks else { return }
+        config.statusHooks = on
+        session?.setStatusHooks(on)
+        appLog("status hooks: statusHooks = \(on) (from the next agent start)")
+        if !Config.saveValue(on, forKey: "statusHooks") {
+            appLog("status hooks: statusHooks not saved; it applies until Poppy quits")
+        }
     }
 
     // MARK: - Attachments (DESIGN §9.10)
@@ -1070,6 +1162,7 @@ final class PanelController: NSObject {
             session?.paste(text)
         }
         guard !isAnimating else { return }
+        closeSettings()  // show the agent it went to
         if state == .collapsed {
             expand()
         } else if !panel.isKeyWindow {

@@ -97,12 +97,12 @@ Poppy reads this file when it starts, so restart Poppy after editing it.
   - Codex: entries appended to `~/.codex/hooks.json`. Codex asks you once to approve them.
   - Antigravity: a plugin, `~/.gemini/config/plugins/poppy-status/`. That folder is shared with the Antigravity desktop app and IDE, where the plugin does nothing. Antigravity has no hook for "waiting for you", so its pill never turns orange: it stays blue while Antigravity asks you to approve a command, and idle while it asks whether to trust a new folder.
   - opencode: a plugin, `~/.config/opencode/plugins/poppy-status.ts`.
-  - It only adds entries; it never removes or changes yours. Set `"statusHooks": false` to turn this off.
+  - It only adds entries; it never removes or changes yours. Turn this off with **Agent status** in Settings (or `"statusHooks": false`).
 - **Usage meters.**
   - For Claude, Poppy runs Claude Code's own `/usage` command (`claude -p /usage`): no model call, not saved as a session, and with your user settings skipped, so hooks in your own Claude Code settings don't fire for it (organization-managed settings still apply). Poppy never reads your Claude login.
   - For Codex, it asks `codex app-server` for its rate limits.
   - For Antigravity, it runs `agy -p /usage` (no model call), only after checking that `agy` is signed in (it looks for `agy`'s login in your Keychain by name, without reading it), since a signed-out `agy` would open a browser sign-in page.
-  - Turn the meters off with **Show Usage** in the menu.
+  - Turn the meters off with **Show usage meters** in Settings (**Settings…** in the menu, or ⌘, in the panel).
 - **Pasted and dropped images** are saved as PNGs in a private temporary folder and deleted after a week.
 
 Poppy needs no special permissions (no Accessibility, Screen Recording or Input Monitoring).

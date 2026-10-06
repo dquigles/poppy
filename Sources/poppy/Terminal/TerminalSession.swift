@@ -59,6 +59,11 @@ final class TerminalSession {
         appLog("agent: \(spec.executable) \(spec.args.joined(separator: " ")) in \(spec.currentDirectory)")
     }
 
+    /// Status hooks on or off from the next start (`restart()` recomputes the spec, DESIGN §9.6).
+    func setStatusHooks(_ on: Bool) {
+        config.statusHooks = on
+    }
+
     /// Ends the current agent and starts `command` in `directory`: one restart for an
     /// agent switch, a directory change, or both (DESIGN §9.5, §9.8, §9.9).
     func switchTo(command: String, directory: String) {

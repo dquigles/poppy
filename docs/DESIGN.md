@@ -52,10 +52,10 @@ Sources/poppy/
   Usage/UsageMonitor.swift          UsageReport + UsageMonitor: which source, when to fetch, staleness (§9.7)
   Usage/UsageSources.swift          Claude (OAuth endpoint) and Codex (app-server) fetchers (§9.7)
   Views/UsageBar.swift              the expanded view's usage footer (§7.9) and the ring's formatting helpers
+  Views/SettingsView.swift          the settings page in the expanded view, HotkeyField, first-mouse controls (§7.9, §11.2, M22)
   Hotkey/GlobalHotKey.swift         Carbon hotkey wrapper (register/unregister)
   Hotkey/HotKeyCombo.swift          key table: parse, config string, display, validity (§11.1)
-  Hotkey/HotKeyManager.swift        owns the hotkey, current combo and recorder (§11)
-  Hotkey/HotKeyRecorder.swift       "Set Hotkey" window (§11.2)
+  Hotkey/HotKeyManager.swift        owns the hotkey and current combo; recording for the settings page (§11)
 Resources/Info.plist                used only by scripts/bundle.sh (not a SwiftPM resource)
 Resources/Logos/*.png               harness + Poppy logos, black on transparent (§7.11); src/*.svg are their sources, src/LICENSE-lobe-icons their license
 scripts/render-logos.swift          renders Resources/Logos/src/*.svg to the PNGs
@@ -110,7 +110,7 @@ Files are introduced in the milestone that needs them (§13).
 
 ## 5. The panel (`GlassPanel: NSPanel`)
 
-There is one Poppy panel for the app's whole lifetime. It is never closed, only resized. (From M10 the hotkey recorder, §11.2, is a separate, short-lived `GlassPanel`.)
+There is one Poppy panel for the app's whole lifetime. It is never closed, only resized. (M10–M21 the hotkey recorder was a separate, short-lived `GlassPanel`; since M22 it's a field on the settings page, §11.2.)
 
 ```swift
 super.init(contentRect: rect,
@@ -140,7 +140,7 @@ Overrides:
 - `performKeyEquivalent(with:)` (§6.2).
 - `sendEvent(_:)` and `ignoreKeys(for:)`: the auto-open key guard (M14, §7.15).
 
-The Poppy panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1). (The hotkey recorder's own `GlassPanel` is covered by §11.2.)
+The Poppy panel is shown with `orderFrontRegardless()` only; `makeKeyAndOrderFront` is used only in the expanded state (§6.1).
 
 **Titled while expanded.** `titlebarAppearsTransparent = true` and `titleVisibility = .hidden` are set once in `init`. `GlassPanel.setTitledChrome(_:)` adds `[.titled, .fullSizeContentView]` at the start of `expand()`. AppKit recreates the three standard (traffic-light) buttons when a titled window's style mask changes (observed for `.titled` and `.resizable`), so `GlassPanel` overrides `styleMask` with a `didSet` that hides them again after **every** change, whatever made it. It removes them, and `.resizable` (added after the expand animation, §7.13), in the collapse frame-animation completion. `zoom(_:)` is a no-op (§7.13). Reason: as a borderless *key* window on macOS 26, the panel got a square hairline outline along its bounds, outside the rounded glass. A titled window gets a real rounded window shape, so the key outline and shadow follow the glass. This was verified with a scratchpad experiment in three modes: borderless (square), borderless without shadow while key (no rim), and titled (correct). The pill stays borderless, because its shadow follows the capsule's alpha and a titled window's system corner radius wouldn't match the capsule.
 
@@ -192,8 +192,9 @@ The app is never active and has no main menu, so menu key equivalents never fire
 | `c` | `#selector(NSText.copy(_:))` |
 | `v` | `#selector(NSText.paste(_:))` |
 | `a` | `#selector(NSResponder.selectAll(_:))` |
+| `,` | `onToggleSettings` (opens or closes the settings page, §7.9; M22), returns true |
 
-It returns the result of `sendAction`. Everything else, including Cmd-Q and Cmd-W, goes to `super` (so it is not handled; quitting is via the menu). All non-command keys reach the first responder unchanged, so Esc, Ctrl-C and the rest reach the terminal. SwiftTerm's Mac `TerminalView` implements `open func copy(_:)`, `open func paste(_:)` and `override func selectAll(_:)` (checked in v1.20.0 source).
+It returns the result of `sendAction`. While the settings page shows (`isShowingSettings`), a plain Esc, Return or keypad Enter (key codes 53, 36, 76) calls `onCloseSettings` and is consumed, in both `performKeyEquivalent` and `sendEvent`. Everything else, including Cmd-Q and Cmd-W, goes to `super` (so it is not handled; quitting is via the menu). All non-command keys reach the first responder unchanged, so Esc, Ctrl-C and the rest reach the terminal. SwiftTerm's Mac `TerminalView` implements `open func copy(_:)`, `open func paste(_:)` and `override func selectAll(_:)` (checked in v1.20.0 source).
 
 ### 6.3 Click outside collapses (M9)
 There is no collapse button; the panel collapses on a click outside it, or with the hotkey while it is key (§11). (M9 briefly had a Collapse menu item; the user removed it in M10.)
@@ -326,6 +327,22 @@ In `PillView`, ignored while `isAnimating`:
   - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left, right and bottom (above the usage footer when it's shown). The gap below the header is 0.
   - `wantsLayer = true`, `layer.cornerRadius = 10`, `layer.masksToBounds = true`, no background color.
   - Until M5 it holds the placeholder: an editable `NSTextField` filling its width at the top, with placeholder text "Type here to test focus".
+- **`SettingsView`** (M22, `Views/SettingsView.swift`): the settings page, a sibling over `contentHost` with the same frame (kept in step by `setUsageVisible`), hidden unless shown. While it shows, the **header** (`HeaderView.setShowsSettings(true)`) reads "Settings" (styled like the directory name, no tooltip) in place of the directory name, with a small Done push button 10 pt from its right edge (`hitTest` gives Done its own clicks; the rest of the header still drags). A directory change meanwhile updates the saved title, shown when the page closes. The page is an `NSScrollView` (no background, scroller only when needed) laid out like System Settings: a vertical stack, 12 pt from the top, 20 pt from the sides, at most 620 pt wide and centered, of rounded **cards** (`SettingsCard`: 10 pt continuous corners, `labelColor` at 5 % fill and a 0.5 pt 6 % border, resolved per appearance in `updateLayer`) 20 pt apart, each preceded (except the first) by a **section header** (13 pt bold `labelColor`, optional 11 pt description, 8 pt above its card). Each **row** is at least 38 pt high: the title (13 pt `labelColor`; `tertiaryLabelColor` while its control is disabled) with an optional description under it (`SettingsLabel`, 11 pt secondary, wrapping at its laid-out width) 10 pt from the left, the control 10 pt from the right, both vertically centered; inset hairlines (`NSBox` separators, 10 pt in from each side) between rows. Cards, top to bottom: (no header) Agent, Working directory, Hotkey; **Pill**: Pill size, Usage meters, Agent status; **Auto-Open** (description "Opens the panel by itself when the agent needs you.", or "Needs Agent status, above."): When the agent needs input, When the agent is done, Take keyboard focus; **Advanced**: Custom agents and other options. Controls:
+  - **Agent:** a pop-up button (the profiles of the Agent menu, §9.5, with 16 pt logos; "(not installed)" ones disabled unless current); note "Changing it restarts the agent." → `switchAgent(to:)`.
+  - **Working directory:** a pop-up button (the current folder, then recents, with folder icons, full path as tooltip; a separator; "Choose Folder…"); same note. A recent → `openDirectory(_, show: false)`; Choose Folder… → `pickFolder(show: false)` (§9.8), after which the page takes the keyboard back (`refocusSettings()`). The pop-up shows the current folder again at once; the change lands through `apply`.
+  - **Hotkey:** `HotkeyField`, an inline shortcut field (§11.2), with its hint or error as the row description.
+  - **Pill size:** radio buttons in a row, Small / Medium / Large (§7.14).
+  - **Usage meters:** a small `NSSwitch`; note "Limits left and reset times in the footer and around the pill."
+  - **Agent status:** a small `NSSwitch` for `config.statusHooks` (§9.6); note that it applies the next time the agent starts (`TerminalSession.setStatusHooks(_:)` changes its config copy; `restart()` recomputes the spec).
+  - **Auto-Open:** small switches "When the agent needs input", "When the agent is done", and "Take keyboard focus" (`autoOpenFocus`, description "With this off, the panel shows without taking your typing."), the last enabled only when one of the first two is on. All three are disabled with Agent status off.
+  - **Advanced:** "Custom agents and other options" (description "In config.json, read when Poppy starts.") with an "Edit config.json…" push button (`NSWorkspace.open`), for what stays file-only (custom `agents`).
+  Every control accepts first mouse. The page accepts first responder and swallows every key except Tab / Shift-Tab (key view loop through all controls), so nothing reaches the terminal underneath; GlassPanel turns Esc and Return into Done (§6.2). `update(_ SettingsModel)` rebuilds the controls (the agent and folder lists each time).
+  - `ExpandedView.setSettingsVisible(_:animated:)`: the view that ends up shown is unhidden first (so it can take the keyboard at once), then a 0.15 s crossfade; the other is hidden at the end unless a newer call came (generation counter). Unanimated sets the end state.
+  - **Opening** (`openSettings()`, from "Settings…" in the menu or ⌘,; ignored while animating): collapsed → the page is shown instantly, `openingSettings = true`, `expand()` (the pill grows into the page); expanded → crossfade, `makeKeyAndOrderFront`, the page is first responder; already shown → refocus it. `focusTarget` is the page while it shows.
+  - **Closing** (`closeSettings(animated:markSeen:)`): Done, Esc, Return, ⌘,; `collapse()` (instantly, not marking done seen: the next expand shows the terminal); `apply` with `show` (§9.9); a drop or paste into the agent (§9.10); an auto-open (§7.15) except while `openingSettings` (cleared in `finishAnimation()` after the pending auto-open retry). It refocuses the terminal, and marks done seen if the panel is key and `markSeen`.
+  - **Kept** through Restart Agent and Agent ▸ / Working Directory ▸ changes without `show`.
+  - **Changes:** pill size → `setPillDiameter`, Auto-Open → `setAutoOpen`, usage → `setShowUsage`, Agent status → `setStatusHooks` (each saved with `Config.saveValue`, §8.1). Each is followed by `refreshSettings()` (so a refused change shows the real value), as are `apply`, `switchAgent` and `HotKeyManager.onComboChanged` (every end of a recording). Closing the page cancels a recording in progress.
+  - Logs `settings: shown` / `settings: closed`.
 - **`UsageBar`** (M15, §9.7): a 22 pt footer along the bottom (full width, 12 pt side padding, autoresizing `[.width, .maxYMargin]`); `contentHost` then starts at 22 pt instead of 8 pt. `ExpandedView.setUsageVisible(_:)` shows or hides it and moves `contentHost`'s bottom edge (a terminal resize, so it's driven only by the harness and the Show Usage setting, never by fetch results). Contents, left to right, one group per window (short, then long): the window label (`5h`, `7d`, from the window's length), a 48×4 pt capsule meter filled to the **used** fraction (`labelColor` at 0.75 alpha, or `.systemRed` at ≥ 90 % used, over a `labelColor` 0.15 track), and text `"<left>% left · resets in <countdown>"` (11 pt, `secondaryLabelColor`, truncating tail). Countdown: `<1 h` → `"Xm"`, `<48 h` → `"Xh Ym"`, else `"Xd Yh"`; past or missing → no "resets" part. With no report yet it reads `"Usage: loading…"`; when unavailable, `"Usage unavailable"` (the reason in the tooltip). Each group's tooltip: `"<used>% of the <label> limit used, resets <local time>"`. Right-clicks show the context menu; clicks do nothing.
 
 ### 7.10 Poppy menu (context menu and menu bar)
@@ -333,10 +350,8 @@ In `PillView`, ignored while `isAnimating`:
 - It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
   - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5). Enabled only if `session != nil`.
   - **"Working Directory ▸"** (M16): a submenu built by `makeDirectoryMenu()` (§9.8). Enabled only if `session != nil`.
-  - **"Pill Size ▸"** (M13): Small / Medium / Large (§7.14).
-  - **"Auto-Open ▸"** (M14): "When Input Is Needed" and "When Done", then a separator and "Focus the Panel"; checkmarks from `config.autoOpenOnInput` / `autoOpenOnDone` / `autoOpenFocus`; `toggleAutoOpen(_:)` (key in `representedObject`) flips the flag and saves it with `Config.saveValue(Bool, forKey:)`. Enabled only if there's a session and `config.statusHooks` (§7.15).
-  - **"Show Usage"** (M15): checkmark from `config.showUsage`; `toggleShowUsage` flips it, saves it with `Config.saveValue`, and updates the monitor, footer and ring at once (§9.7).
-  - **"Set Hotkey (⌃⌥Space)"** (M10): the current hotkey is shown in the same item, `" (" + hotKeys.current.displayString + ")"`, omitted when there is none. Action `setHotKey` calls `hotKeys?.beginRecording()` (§11.2). Enabled only if `hotKeys?.canRecord == true`.
+  - separator
+  - **"Settings…"** (M22; ⌘, shown as a hint, handled by GlassPanel, §6.2): `openSettings()` (§7.9). Disabled while animating. Pill Size, Auto-Open, Show Usage and Set Hotkey (M10–M15) moved from the menu to the settings page in M22.
   - separator
   - **"Restart Agent":** action `restartAgent` calls `session?.restart()`. Enabled only if `session != nil`.
   - separator
@@ -386,7 +401,7 @@ In `PillView`, ignored while `isAnimating`:
 ### 7.14 Pill size presets (M13)
 - `PanelController.pillPresets`: Small 36, Medium 44 (default), Large 56 pt. `pillDiameter` is loaded from `state.json` if it's one of these, else 44. `pillSize` and `pillCornerRadius` (diameter / 2) are computed from it.
 - **Logo size:** `PillView.logoSize(forDiameter:)` = `round(diameter × 24 / 44)` (20, 24, 31); `PillView.setDiameter(_:)` updates the logo's width and height constraints. The logo image itself is always requested at 24 pt and scaled by the image view.
-- **Menu:** "Pill Size ▸" (§7.10) lists the presets, the current one checked, disabled while animating; `selectPillSize(_:)` (tag = diameter) calls `setPillDiameter(_:)`:
+- **Settings page:** "Pill size" (§7.9) shows the presets as radio buttons; a choice calls `setPillDiameter(_:)`:
   - Ignored if unchanged or animating. Sets `pillDiameter` and the logo size.
   - Collapsed: the new frame keeps the corner nearest the screen corner (`anchor(for: pillFrame)`, §7.5), is clamped, and applied; `glass.cornerRadius = pillCornerRadius`; `refreshShadow()`; `pillFrame` = it.
   - Expanded: nothing moves; the next collapse uses the new size (`pillFrame(fromExpanded:)` and the collapse completion's corner radius).
@@ -398,7 +413,8 @@ Driven by status changes (§9.6), in `PanelController.statusChanged(_:)`, which 
 - **working:** if that first status after a waiting open, expanded and not animating, `collapse()`: focus goes back to the app underneath (like claude-popup's detach hook). Not after a `.done` auto-open, where the user is typing the next prompt in the panel.
 - **waiting:** if `config.autoOpenOnInput`, `autoOpen(for: .waiting)`.
 - **done:** if expanded and key, `markDoneSeen()`; else if `config.autoOpenOnDone`, `autoOpen(for: .done)`.
-- **`autoOpen(for:)`**: while animating, in live resize, or with a mouse button down (`NSEvent.pressedMouseButtons != 0`; a pill drag would keep moving the now-expanded window and save its frame as the pill's), it logs `waiting`, stores `pendingAutoOpen = reason` and returns; `retryPendingAutoOpen()` runs it again from `finishAnimation()`, the end of a live resize, or (mouse down) a 0.25 s re-check, if the session's status still equals the reason. While the hotkey recorder is open (`hotKeys.isRecording`; taking key would close it and lose the recording) it's skipped (logged), not retried.
+- **Settings page** (§7.9): an auto-open while it shows closes it (logged `closed settings`) and refocuses the terminal, unless the expand that opened it from the pill is still running. Done isn't marked seen while it shows (`statusChanged` and `panelDidBecomeKey` skip it); closing it marks it.
+- **`autoOpen(for:)`**: while animating, in live resize, or with a mouse button down (`NSEvent.pressedMouseButtons != 0`; a pill drag would keep moving the now-expanded window and save its frame as the pill's), it logs `waiting`, stores `pendingAutoOpen = reason` and returns; `retryPendingAutoOpen()` runs it again from `finishAnimation()`, the end of a live resize, or (mouse down) a 0.25 s re-check, if the session's status still equals the reason. While the hotkey is being recorded (`hotKeys.isRecording`, §11.2; closing the page would cancel it) it's skipped (logged), not retried.
   - Collapsed: `expand(focus: config.autoOpenFocus)`, then `autoOpenedFor = reason`. In expand's frame completion, right after `makeKeyAndOrderFront`, if `autoOpenedFor != nil`, `panel.ignoreKeys(for: 0.4)`, so the guard starts when the panel actually takes the keyboard. In expand's fade completion, if `autoOpenedFor == .waiting` and the status has already moved on: clear it, and `collapse()` if it's `working` (the user answered during the animation).
   - Expanded but not key: with `autoOpenFocus`, `ignoreKeys(for: 0.4)`, `makeKeyAndOrderFront`, first responder = `focusTarget`; without it, only `orderFrontRegardless()`. `autoOpenedFor` is unchanged.
   - Expanded and key: nothing.
@@ -466,7 +482,6 @@ The panel is already hidden by the system, so nothing visible changes. The point
 **Interaction with the rest.**
 - Independent of `state` and `isAnimating`: it touches only `glass.alphaValue`, `hasShadow` and two layer animations on `glass`, none of which expand/collapse (frame and `PillView`/`ExpandedView` alpha, §7.7) touch; the window alpha is never changed, and it never changes key status, frames or the first responder. The panel stays interactive during the reveal; hit-testing ignores the layer transform, so a click in the first ≈ 0.3 s lands on the unscaled position (accepted). If an expand/collapse or a resize (§7.13) starts during the spring, the pivot is based on the old bounds; the slight off-center scale is accepted.
 - Other code calls `refreshShadow()` (e.g. `becomeKey`, animation completions) while `hasShadow` is false: harmless; the completion in step 3 recomputes it once `hasShadow` is back.
-- The hotkey recorder panel (§11.2) is not affected.
 - No config flag or menu item.
 
 **Verification (the user, by eye):** swipe slowly and fast between a fullscreen app and the desktop, and snap a swipe back, with the pill collapsed and with the panel expanded (key and not key): each time the panel reappears with the fade and scale (a fast swipe may reappear without it), never flashes at full opacity first, never stays invisible, and the glass renders correctly while scaling (if not: fade-only, i.e. drop step 4). Swipe again right after the panel reappears (re-arm mid-reveal). Press the hotkey mid-swipe: the panel expands and its rim comes back. Expanded and not key: it reappears with no user action (must pass). The glass looks right while fading, too (fallback: no fade; `glass.alphaValue = 1` without animation at the start of the reveal, scale only). Expanded and key: the window outline has no square hairline or other glitch while `hasShadow` is off (fallback: keep the shadow on while expanded, or fade only). Expand/collapse, the hotkey and drags must look and behave exactly as before (no `reveal:` log lines from them). With Reduce Motion on, it only fades.
@@ -479,7 +494,7 @@ The directory is `~/.config/poppy/`, created with intermediate directories if mi
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
-Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the Auto-Open menu writes these three; `statusHooks` is user-written only). `"showUsage": true` (M15, §9.7; written by the Show Usage menu item). The defaults file written on first launch contains these flags too.
+Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the settings page writes these three, and `statusHooks` since M22). `"showUsage": true` (M15, §9.7; written by the settings page). The defaults file written on first launch contains these flags too.
 
 Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", "command": "claude --dangerously-skip-permissions" }]`, extra entries for the Agent submenu (§9.5). It's `var agents: [AgentProfile]?`; the synthesized encoder omits it when nil, so the defaults file doesn't contain it. Decoding it can't fail the whole file: if it doesn't decode (e.g. an entry without `name`), log `config.json "agents" is invalid, ignoring it` and use nil; entries whose `name` or `command` is blank after trimming are dropped.
 
@@ -837,13 +852,13 @@ The user chose to replace the Claude meter's source (the Keychain token + `api.a
 
 ## 11. Global hotkey (M6)
 
-**Ownership (M10).** `AppDelegate` owns a `HotKeyManager` (`Hotkey/HotKeyManager.swift`) and hands it to `PanelController.hotKeys` (weak), so the menu can show and change the hotkey (§7.10). The manager owns `GlobalHotKey?`, `current: HotKeyCombo?` (the chosen combo) and the recorder (§11.2).
+**Ownership (M10).** `AppDelegate` owns a `HotKeyManager` (`Hotkey/HotKeyManager.swift`) and hands it to `PanelController.hotKeys` (weak), so the settings page can show and change the hotkey (§7.9). The manager owns `GlobalHotKey?` and `current: HotKeyCombo?` (the chosen combo); recording is driven by the page's field (§11.2).
 
 **`HotKeyManager.init(spec:action:)`**
-- `isRecording` (M14): true while the recorder is open; auto-open waits for it (§7.15).
-- `GlobalHotKey(action:)`; nil if the handler can't be installed (then there is no hotkey and "Set Hotkey" is disabled).
+- `isRecording` (M14): true while the shortcut field records; auto-open is skipped meanwhile (§7.15).
+- `GlobalHotKey(action:)`; nil if the handler can't be installed (then there is no hotkey and the settings page's Hotkey field is disabled).
 - `HotKeyCombo(spec: config.hotkey)`; if nil, log it and use `Config.defaultHotkey` (`ctrl+opt+space`).
-- `register(combo)`; `current = combo` only if it returned `noErr`. Otherwise log it and continue without a hotkey (the menu item reads just "Set Hotkey").
+- `register(combo)`; `current = combo` only if it returned `noErr`. Otherwise log it and continue without a hotkey (the settings page shows "None").
 
 **`GlobalHotKey`** (`final class`, the Carbon wrapper)
 - `init?(action: @escaping @MainActor () -> Void)`: `InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)`, with `spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))`. Logs the OSStatus; returns nil if non-zero. The handler stays installed for the app's lifetime.
@@ -894,29 +909,23 @@ The user chose to replace the Claude meter's source (the Keychain token + `api.a
 - Invalid string: nil (the manager logs it and uses the default).
 
 **Other members**
-- `init(keyCode:modifiers:)`, used by the recorder after `check` passes.
+- `init(keyCode:modifiers:)`, used by the shortcut field after `check` passes.
 - `static func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32`: ⌃⌥⇧⌘ only; fn, Caps Lock and keypad flags are ignored.
 - `spec`: canonical string with modifiers in the order `ctrl`, `opt`, `shift`, `cmd`, then the key, e.g. `ctrl+opt+space`.
 - `displayString`: modifier symbols in Apple's order ⌃⌥⇧⌘, then the key's display, e.g. `⌃⌥Space`. `static func modifierSymbols(_:)` gives the symbols alone.
 
-### 11.2 Hotkey recorder (`Hotkey/HotKeyRecorder.swift`, M10)
-Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
-- If a recorder is already open, `show()` it again. Otherwise `hotKey.unregister()` (so pressing the current hotkey is recorded instead of toggling the panel), create the recorder and `show()` it.
-- **Window:** a `GlassPanel` (§5), 340×140, `allowsKey = true`, `setTitledChrome(true)` (rounded key outline), content a `GlassBackgroundView` with radius 20. Centered horizontally on `PanelController.screenWithMouse().visibleFrame`, and a sixth of its height above center. `show()` = `makeKeyAndOrderFront(nil)` + `refreshShadow()`. Like the expanded panel, it becomes key without activating Poppy. 0.5 s later, if it isn't closed and `!panel.isKeyWindow`, log it and close (no refocus): otherwise it could never be dismissed and the hotkey would stay suspended.
-- **Contents:** a vertical `NSStackView`, centered, spacing 6: "Poppy hotkey" (12 pt, secondary); the combo label (24 pt medium, starts as "Press a shortcut"); the hint (11 pt, wrapping, centered, secondary; red for errors), initially "Current: ⌃⌥Space · Esc to cancel" (or "none").
-- **Keys:** an `NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged])` monitor, installed on the first `show()` and removed on close. It sees keys before key equivalents (so `GlassPanel`'s ⌘C/V/A routing doesn't fire) and returns nil to swallow them. Events whose `window !== panel` pass through. The handler isn't `@Sendable`, so it is main-actor isolated and calls `handle(_:)` directly (no `assumeIsolated`, which can't capture the non-Sendable `NSEvent`).
-  - `flagsChanged`: the combo label shows the held modifier symbols plus "…" (or "Press a shortcut" when none); pass the event through.
-  - `keyDown` repeats are swallowed. Escape with no modifiers closes (cancel).
-  - `check` fails: combo label resets, hint in red: "That key can't be used." or "Add ⌃, ⌥ or ⌘ (F-keys work alone).", each followed by "Esc to cancel". Stay open.
-  - Otherwise show `displayString` and call the manager's `record(combo)`:
-    - `register` fails: `.failed("<combo> couldn't be registered (OSStatus N). Try another.")`; the hint shows it; stay open.
-    - Success: `current = combo`, then `Config.saveHotkey(combo.spec)` (§8.1). Saved: `.saved`, the recorder closes. Not saved: `.notSaved`; `unregister()` again so the hotkey stays suspended while the recorder is open, the hint says it will be active but resets on relaunch, and Esc closes (which registers `current`).
-- **Close** (`close(refocus:)`, idempotent): `refocus` is true for Esc and a successful save, false for losing key status and the not-key timeout. `onResignKey` closes via `DispatchQueue.main.async`, because closing releases the panel, which must not happen inside its own `resignKey`. Remove the monitor, clear `onResignKey`, `allowsKey = false`, `orderOut`, then call the manager's `recorderClosed(refocus:)`:
-  - `recorder = nil`.
-  - If `hotKey.registered != current`, `register(current)` (restores the old hotkey after a cancel or a failed attempt). If that fails, `current = nil`, so the menu doesn't show a hotkey that doesn't work.
-  - If `refocus`, call `onRecorderClosed`, which `PanelController` sets (in `hotKeys`' `didSet`) to `refocusIfExpanded()`: if expanded and not animating, `panel.makeKeyAndOrderFront(nil)` and first responder = `focusTarget`. Not after a click elsewhere, so focus stays where the user put it.
-- Recording stores the physical key code; the display uses US-layout names (§11.1), so on other layouts (e.g. AZERTY) the shown character can differ from the key's printed label.
-- Shortcuts owned by the system or another app (e.g. ⌘Space for Spotlight) are generally intercepted before they reach the recorder, so they can't be recorded.
+### 11.2 Recording a hotkey (`HotkeyField` in `Views/SettingsView.swift`; a separate recorder window M10–M21)
+The settings page's Hotkey row (§7.9) is a push-on/push-off button showing the combo ("None" when there is none; disabled with "Hotkeys are unavailable." when `!hotKeys.canRecord`), like System Settings' shortcut fields:
+- **Click:** `onBegin` → `HotKeyManager.beginRecording()` (sets `isRecording`, `hotKey.unregister()`, so pressing the current hotkey is recorded instead of toggling the panel; false if hotkeys are unavailable). The field reads "Press a shortcut", the hint "Esc to cancel." A second click cancels.
+- **Keys:** an `NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged])` monitor while recording. It sees keys before `GlassPanel`'s key equivalents and its Esc/Return handling, and returns nil to swallow them; events for other windows pass through. The handler isn't `@Sendable`, so it is main-actor isolated.
+  - `flagsChanged`: the field shows the held modifier symbols plus "…" (or "Press a shortcut").
+  - `keyDown` repeats are swallowed. Escape with no modifiers cancels.
+  - `check` fails: the hint in red, "That key can't be used." or "Add ⌃, ⌥ or ⌘ (F-keys work alone).", each followed by "Esc to cancel." Still recording.
+  - Otherwise show `displayString` and call `onRecord` → `HotKeyManager.record(combo)`:
+    - `register` fails: `.failed("<combo> couldn't be registered (OSStatus N). Try another.")` in red; still recording.
+    - Registered: `current = combo`, then `Config.saveHotkey(combo.spec)` (§8.1). Saved: `.saved`, the recording ends. Not saved: `.notSaved`; the recording ends and the hint says in red that it's active now but resets when Poppy restarts.
+- **End** (`stop()`: a save, Esc, a second click, or the page closing via `cancel()`): remove the monitor, show the combo, `onEnd` → `HotKeyManager.endRecording()`: `isRecording = false`; if `hotKey.registered != current`, `register(current)` (restores the old hotkey after a cancel or a failed attempt; on failure `current = nil`, so no hotkey that doesn't work is shown); then `onComboChanged` refreshes the page.
+- Shortcuts owned by the system or another app (e.g. ⌘Space for Spotlight) are generally intercepted before they reach the shortcut field, so they can't be recorded.
 
 ## 12. Packaging (M7)
 
@@ -979,6 +988,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 | M19 | Antigravity CLI (`agy`) as a built-in agent: `Harness.antigravity`, catalog entry, logo, CLI help, and a Poppy-owned status plugin in `~/.gemini/config/plugins/poppy-status/`; README (agent list, `-a` help, status hooks, uninstall); Gemini CLI support removed (§9.6, §9.11) | — |
 | M20 | Antigravity usage meter: `AntigravityUsage` (`agy -p /usage --output-format json`), per-group weekly windows named Gemini / Claude/GPT, the ring following the model in use via a `.model` file written by the `PreInvocation` hook (§9.12) | — |
 | M21 | Claude usage from `claude -p /usage --output-format json --no-session-persistence --setting-sources project` in a temp folder (text parsed), replacing the Keychain token + OAuth endpoint; no fallback (§9.13) | — |
+| M22 | `Views/SettingsView.swift`; the settings page in the expanded view (Agent, Working directory, Hotkey, Pill size, Usage meters, Agent status, Auto-Open, Edit config.json…), opened by "Settings…" or ⌘, (from the pill with the expand animation), with "Settings" and Done in the header; Pill Size, Auto-Open, Show Usage and Set Hotkey leave the menu; the hotkey recorder window is replaced by an inline shortcut field (`Hotkey/HotKeyRecorder.swift` removed) (§7.9, §7.10, §6.2, §11.2) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -1000,7 +1010,7 @@ Opened by the menu's "Set Hotkey" (§7.10) via `HotKeyManager.beginRecording()`:
 9. Whether `panel.animator().setFrame` honors `ctx.timingFunction` (easing only; judged by eye): M4.
 10. The menu bar item's menu doesn't activate Poppy or take key/frontmost from the underlying app, collapsed or expanded: M8.
 11. Whether the global mouse monitor fires for clicks on other apps over fullscreen Spaces, on the desktop, and on other menu bar items, without Accessibility permission, both unbundled and bundled; and that dragging a file from Finder into the expanded terminal doesn't collapse it: M9.
-12. Whether the recorder panel becomes key and receives keys (including ⌘ combos) without activating Poppy, over fullscreen apps too, and whether a changed hotkey takes effect immediately; the recorder can always be dismissed; and keyboard focus returns to the underlying app after it closes over the collapsed pill: M10.
+12. (M10–M21, the recorder window) Whether the recorder panel becomes key and receives keys (including ⌘ combos) without activating Poppy, over fullscreen apps too, and whether a changed hotkey takes effect immediately; the recorder can always be dismissed; and keyboard focus returns to the underlying app after it closes over the collapsed pill: M10.
 13. Whether the 44×44 glass circle keeps a good rim and shadow, whether template logos read well on glass in light and dark, and whether the Poppy logo is legible at 18 pt in the menu bar: M11.
 14. Whether the installed-CLI probe (an interactive login shell without a tty) finishes quickly and finds aliases, including from the Finder-launched app; that under `swift run` it never touches the launching terminal; and whether switching agents cleanly ends the old one and starts the new one: M12.
 15. Whether system edge/corner resizing works on the non-activating titled panel (cursors, all edges, over fullscreen apps), whether the terminal reflows smoothly while dragging without garbling the agent's display, and whether the smaller and larger pills keep a good glass rim: M13.
