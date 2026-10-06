@@ -235,6 +235,7 @@ Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − pillW
 `clamp(frame, in screen)` shifts the frame so it lies inside `visibleFrame.insetBy(dx: 8, dy: 8)`. Frames are never shrunk: if a frame is larger than that area, it is aligned to the area's top-left corner (`minX`, `maxY`) and allowed to overflow. This is decided **per axis**: an axis that fits is shifted normally; an axis that overflows is aligned (x to `minX`, y so that `maxY` matches). The `ExpandedView` (§7.7) is therefore never clipped by clamping. (Only the expand-time fit, §7.13, ever shrinks it, before clamping.) It is applied:
 - **To the computed expanded frame**, using the screen chosen from the pill frame.
 - **To the restored pill frame at launch.**
+- **On every drag move and at drag end** (pill and header, §7.8–7.9).
 - **On a screen-parameter change:**
   - Collapsed: clamp the pill frame.
   - Expanded: clamp the current expanded frame in `screen(for: currentExpandedFrame)`, then recompute `pillFrame` from it (§7.6).
@@ -310,7 +311,7 @@ In `PillView`, ignored while `isAnimating`:
 - **`mouseDragged`:**
   - `delta = NSEvent.mouseLocation − startMouse`.
   - If not already dragging and `hypot(delta.x, delta.y) > 3`, set `dragging = true`.
-  - While dragging, `window.setFrameOrigin(startOrigin + delta)`.
+  - While dragging, `window.setFrameOrigin` to `startOrigin + delta` clamped (§7.4) in the screen under the mouse (`screen(for:)` of the frame if none), so the window never goes past a screen edge, yet still follows the mouse onto another display.
 - **`mouseUp`:**
   - If dragging: clamp in `screen(for: frame)`, update `pillFrame`, save state.
   - Otherwise: `controller.expand()`.

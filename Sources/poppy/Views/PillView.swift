@@ -208,7 +208,8 @@ final class PillView: NSView {
     }
 }
 
-/// Manual window drag with a 3pt click-vs-drag threshold, in screen coordinates.
+/// Manual window drag with a 3pt click-vs-drag threshold, in screen coordinates, clamped
+/// to the screen as it moves (DESIGN §7.4).
 struct WindowDrag {
     private var startMouse = NSPoint.zero
     private var startOrigin = NSPoint.zero
@@ -236,7 +237,12 @@ struct WindowDrag {
             isDragging = true
         }
         if isDragging {
-            window.setFrameOrigin(NSPoint(x: startOrigin.x + dx, y: startOrigin.y + dy))
+            // Kept inside the screen under the mouse while moving, so it never goes past an
+            // edge; following the mouse's screen still lets it move to another display.
+            var frame = window.frame
+            frame.origin = NSPoint(x: startOrigin.x + dx, y: startOrigin.y + dy)
+            let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? PanelController.screen(for: frame)
+            window.setFrameOrigin(PanelController.clamp(frame, in: screen).origin)
         }
     }
 
