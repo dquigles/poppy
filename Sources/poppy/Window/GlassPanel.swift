@@ -63,6 +63,10 @@ final class GlassPanel: NSPanel {
     var onCloseSettings: (() -> Void)?
     /// ⌘, opens or closes the settings page.
     var onToggleSettings: (() -> Void)?
+    /// ⌘T, ⌘W and ⌘1–⌘9 (the nth session); PanelController ignores them where they don't apply.
+    var onNewSession: (() -> Void)?
+    var onCloseSession: (() -> Void)?
+    var onSelectSession: ((Int) -> Void)?
 
     private static let settingsCloseKeyCodes: Set<UInt16> = [53, 36, 76]  // Esc, Return, keypad Enter
 
@@ -149,7 +153,7 @@ final class GlassPanel: NSPanel {
     }
 
     /// Poppy is never the active app and has no main menu, so menu key
-    /// equivalents never fire. Route Cmd-C/V/A to the first responder, and ⌘, to the settings page (DESIGN §6.2).
+    /// equivalents never fire. Route Cmd-C/V/A to the first responder, ⌘, to the settings page, and ⌘T/⌘W/⌘1–9 to the sessions (DESIGN §6.2).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // ⌘ shortcuts (e.g. ⌘V into a permission prompt) are covered by the key guard too.
         if ignoringKeys { return true }
@@ -167,6 +171,15 @@ final class GlassPanel: NSPanel {
         case "a": action = #selector(NSResponder.selectAll(_:))
         case ",":
             onToggleSettings?()
+            return true
+        case "t":
+            onNewSession?()
+            return true
+        case "w":
+            onCloseSession?()
+            return true
+        case let key? where key.count == 1 && ("1"..."9").contains(key):
+            onSelectSession?(Int(key)! - 1)
             return true
         default: return super.performKeyEquivalent(with: event)
         }

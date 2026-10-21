@@ -1,12 +1,26 @@
 import AppKit
 @preconcurrency import SwiftTerm
 
-/// Owns the terminal view and its child process for the app's lifetime (DESIGN §9).
+/// One agent: its terminal view and child process, command, folder, status and name
+/// (DESIGN §9, §7.17). The view stays alive while the session isn't selected.
 final class TerminalSession {
+    let id = UUID()
+    /// Set by the user (Rename); nil means `defaultName`, which follows the folder.
+    var customName: String?
+    /// The folder name, numbered if another session already has it (set by PanelController).
+    var defaultName = ""
+    var name: String { customName ?? defaultName }
+
     private var config: Config
     private var spec: LaunchSpec
     private weak var host: NSView?
+    /// The view is in `host` only while the session is selected.
+    private var attached = false
     private var currentView: PoppyTerminalView?
+
+    var command: String { config.command }
+    /// Absolute and normalized (DESIGN §9.8).
+    var workingDirectory: String { Config.normalize(spec.currentDirectory) }
 
     /// True after the child exits; the next Enter restarts it.
     private(set) var exited = false
@@ -18,7 +32,8 @@ final class TerminalSession {
     private(set) var status = AgentStatus.idle
     var onStatusChange: ((AgentStatus) -> Void)?
     private var statusFile: URL?
-    private var statusGeneration = 0
+    /// App-wide, so two sessions never get the same `status-<pid>-<n>` file (DESIGN §9.6).
+    private static var statusGeneration = 0
     private var statusTimer: Timer?
     /// Modification date of the last report acted on; a hook rewriting the same word is
     /// still a new report (e.g. "done" at the end of every turn).
@@ -32,6 +47,10 @@ final class TerminalSession {
     static let statusDirectory = ConfigPaths.directory.appendingPathComponent("run")
 
     var focusView: NSView? { currentView }
+    /// For Poppy Dev's debug hook (DESIGN §12.2).
+    var statusFilePath: String? { statusFile?.path }
+    var agentPid: pid_t? { currentView?.process?.shellPid }
+    var isShown: Bool { currentView?.superview != nil }
 
     init(config: Config) {
         self.config = config
@@ -72,10 +91,24 @@ final class TerminalSession {
         restart()  // recomputes the spec
     }
 
-    /// Adds the terminal to `host` (which has a fixed size) and starts the agent.
+    /// Shows the terminal in `host` (which has a fixed size), starting the agent the first
+    /// time. A view that was detached is resized to the host once (one SIGWINCH).
     func attach(to host: NSView) {
         self.host = host
-        startNewView()
+        attached = true
+        guard let currentView else {
+            startNewView()
+            return
+        }
+        currentView.frame = host.bounds
+        host.addSubview(currentView)
+    }
+
+    /// Takes the terminal out of its host; the agent keeps running and its output keeps
+    /// going into the view's buffer.
+    func detach() {
+        attached = false
+        currentView?.removeFromSuperview()
     }
 
     func restart() {
@@ -138,7 +171,7 @@ final class TerminalSession {
         }
         view.setFrameSize(host.bounds.size)
         view.registerForDrops()  // files and images (DESIGN §9.10)
-        host.addSubview(view)
+        if attached { host.addSubview(view) }  // a restart while not selected stays out of it
         currentView = view
         exited = false
         // No status file or variable when status hooks are off (DESIGN §9.6).
@@ -158,9 +191,9 @@ extension TerminalSession {
     fileprivate func newStatusFile() -> URL? {
         removeStatusFile()
         setStatus(.idle)  // even if the new file can't be created
-        statusGeneration += 1
+        Self.statusGeneration += 1
         let url = Self.statusDirectory.appendingPathComponent(
-            "status-\(ProcessInfo.processInfo.processIdentifier)-\(statusGeneration)")
+            "status-\(ProcessInfo.processInfo.processIdentifier)-\(Self.statusGeneration)")
         do {
             try FileManager.default.createDirectory(at: Self.statusDirectory, withIntermediateDirectories: true)
             try Data().write(to: url)

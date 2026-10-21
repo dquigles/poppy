@@ -22,7 +22,11 @@ final class UsageMonitor {
     /// Keyed by harness and executable prefix, so two Codex profiles with different
     /// `CODEX_HOME`s don't share an account's numbers.
     private var sources: [String: Source] = [:]
-    private var sourceKey: String { "\(harness)|\(StatusHooks.executablePrefix(command))" }
+    private var sourceKey: String { Self.sourceKey(harness, command) }
+
+    private static func sourceKey(_ harness: Harness, _ command: String) -> String {
+        "\(harness)|\(StatusHooks.executablePrefix(command))"
+    }
     private var timer: Timer?
     private(set) var harness: Harness
     /// The running command (Codex is asked through it, so `CODEX_HOME=…` applies).
@@ -60,6 +64,7 @@ final class UsageMonitor {
     }
 
     func setCommand(_ command: String) {
+        guard command != self.command else { return }  // e.g. switching between two Claude sessions
         self.command = command
         harness = Harness(command: command)
         agentModel = nil
@@ -90,11 +95,13 @@ final class UsageMonitor {
         refresh(.poll)
     }
 
-    /// Fetches for the current harness unless it's too soon (DESIGN §9.7).
-    func refresh(_ trigger: Trigger) {
-        guard isActive else { return }
-        let harness = harness
-        let key = sourceKey
+    /// Fetches for the current harness unless it's too soon (DESIGN §9.7). `command` is
+    /// another session's agent (its turn ended); its result is cached for when it's shown.
+    func refresh(_ trigger: Trigger, command other: String? = nil) {
+        let command = other ?? command
+        let harness = Harness(command: command)
+        guard enabled, Self.supports(harness) else { return }
+        let key = Self.sourceKey(harness, command)
         var source = sources[key] ?? Source()
         let now = Date()
         guard !source.inFlight, now >= source.nextAllowed else { return }
@@ -103,7 +110,6 @@ final class UsageMonitor {
         source.inFlight = true
         sources[key] = source
 
-        let command = command
         Task { [weak self] in
             // Every source runs its CLI and blocks, so never on the main actor.
             let result = await Task.detached { () -> Result<UsageReport, Error> in

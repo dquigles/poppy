@@ -2,10 +2,11 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var config = Config()
-    private var session: TerminalSession?
     private var controller: PanelController?
     private var hotKeys: HotKeyManager?
     private var statusItem: NSStatusItem?
+    /// Poppy Dev only: scripted tests (DESIGN §12.2).
+    private var debugHook: DebugHook?
     /// Requests from the `poppy` shell command that arrived before launch finished, in
     /// order (DESIGN §9.9).
     private var pendingRequests: [LaunchRequest] = []
@@ -28,9 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         appLog("config: command=\(config.command) cwd=\(config.cwd) hotkey=\(config.hotkey)")
-        let session = TerminalSession(config: config)
-        self.session = session
-        let controller = PanelController(config: config, session: session)
+        let controller = PanelController(config: config)
         self.controller = controller
         let hotKeys = HotKeyManager(spec: config.hotkey) { [weak self] in
             self?.controller?.hotkeyPressed()
@@ -38,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.hotKeys = hotKeys
         controller.hotKeys = hotKeys
         statusItem = makeStatusItem(menu: controller.makeMenu())
+        if AppVariant.isDev { debugHook = DebugHook(controller: controller) }
         for request in pendingRequests { controller.apply(request) }
         pendingRequests = []
     }
@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         appLog("Poppy terminating")
-        session?.terminateChild()
+        controller?.terminateAll()
     }
 
     /// Menu bar icon that opens Poppy's menu (DESIGN §7.12).

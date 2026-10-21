@@ -18,6 +18,15 @@ final class PillView: NSView {
     /// The harness name (tooltip and accessibility label), before any status is added.
     private var baseLabel = ""
     private var status = AgentStatus.idle
+    /// With 2+ sessions: the selected session's name and status, and how many need you
+    /// (DESIGN §7.11, §7.17).
+    private var sessionName: String?
+    private var selectedStatus = AgentStatus.idle
+    private var needYou = 0
+    private let badge = CountBadge()
+    /// The preset diameter (the view's own bounds are the panel's while expanded).
+    private var diameter: CGFloat = 44
+    private var badgeHeight: NSLayoutConstraint?
     private var logoHeight: NSLayoutConstraint?
     /// The 5-hour usage ring just inside the glass edge, uncolored and with no track
     /// (DESIGN §7.11, §9.7).
@@ -53,6 +62,8 @@ final class PillView: NSView {
         layer?.addSublayer(ring)
         registerForDraggedTypes(Attachments.dropTypes)  // drop onto the pill (DESIGN §9.10)
         if AppVariant.isDev { addDevTag() }
+        diameter = frame.width
+        addBadge(diameter: frame.width)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         update(harness: harness, title: title)
@@ -70,6 +81,20 @@ final class PillView: NSView {
         ])
     }
 
+    /// The count of sessions that need you, at the top like the DEV tag at the bottom.
+    private func addBadge(diameter: CGFloat) {
+        badge.isHidden = true
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(badge)
+        let height = badge.heightAnchor.constraint(equalToConstant: CountBadge.height(forDiameter: diameter))
+        NSLayoutConstraint.activate([
+            badge.centerXAnchor.constraint(equalTo: centerXAnchor),
+            badge.topAnchor.constraint(equalTo: topAnchor, constant: 2.5),
+            height,
+        ])
+        badgeHeight = height
+    }
+
     /// Shows `harness`'s logo; also called when the agent is switched (DESIGN §9.5).
     func update(harness: Harness, title: String) {
         logo.image = HarnessLogo.image(for: harness, points: Self.baseLogoPoints)  // scaled by the constraints
@@ -79,18 +104,39 @@ final class PillView: NSView {
 
     /// Status color for the logo, and the status in the tooltip and accessibility label,
     /// so it isn't conveyed by color alone (DESIGN §9.6).
-    func setStatus(_ status: AgentStatus) {
+    /// `status` is the most urgent across the pill's sessions (the color). With 2+ sessions,
+    /// `sessionName` and `selected` name the selected one in the label, and `needYou` (those
+    /// waiting or done and unseen) shows as the badge.
+    func setStatus(_ status: AgentStatus, sessionName: String? = nil, selected: AgentStatus? = nil, needYou: Int = 0) {
         self.status = status
+        self.sessionName = sessionName
+        selectedStatus = selected ?? status
+        self.needYou = sessionName == nil ? 0 : needYou
         logo.contentTintColor = status.tint ?? .labelColor
+        badge.isHidden = self.needYou == 0
+        badge.setCount(self.needYou, diameter: diameter)
         updateLabel()
     }
 
-    private func updateLabel() {
-        let suffix = switch status {
+    static func statusSuffix(_ status: AgentStatus) -> String {
+        switch status {
         case .idle: ""
         case .working: " (working)"
         case .waiting: " (needs input)"
         case .done: " (done)"
+        }
+    }
+
+    /// The badge's number, 0 while hidden (for Poppy Dev's debug hook).
+    var badgeCount: Int { badge.isHidden ? 0 : needYou }
+    /// The logo's tint (the most urgent status).
+    var shownStatus: AgentStatus { status }
+
+    private func updateLabel() {
+        var suffix = Self.statusSuffix(status)
+        if let sessionName {
+            suffix = " — \(sessionName)" + Self.statusSuffix(selectedStatus)
+            if needYou > 0 { suffix += needYou == 1 ? ", 1 session needs you" : ", \(needYou) sessions need you" }
         }
         var usageSuffix = ""
         if let usage {
@@ -148,6 +194,9 @@ final class PillView: NSView {
         let size = Self.logoSize(forDiameter: diameter)
         logoWidth?.constant = size
         logoHeight?.constant = size
+        self.diameter = diameter
+        badgeHeight?.constant = CountBadge.height(forDiameter: diameter)
+        badge.setCount(needYou, diameter: diameter)
     }
 
     override func accessibilityPerformPress() -> Bool {
@@ -278,6 +327,57 @@ private final class DevTag: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The pill's count of sessions that need you: an opaque capsule in the label color with
+/// the number knocked out, so it reads on the glass in light and dark mode and never looks
+/// like a status color. It takes no clicks.
+private final class CountBadge: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    /// 8, 10 and 12 pt on the three pill sizes (checked in an offscreen render).
+    static func height(forDiameter diameter: CGFloat) -> CGFloat {
+        (diameter * 0.22).rounded()
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerCurve = .continuous
+        label.textColor = .textBackgroundColor
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            widthAnchor.constraint(greaterThanOrEqualTo: heightAnchor),
+            widthAnchor.constraint(greaterThanOrEqualTo: label.widthAnchor, constant: 4),
+        ])
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setCount(_ count: Int, diameter: CGFloat) {
+        label.stringValue = "\(count)"
+        label.font = .systemFont(ofSize: Self.height(forDiameter: diameter) * 0.78, weight: .heavy)
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    /// Resolved here, where the view's appearance is current (labelColor is translucent in dark mode).
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(1).cgColor
+        layer?.cornerRadius = bounds.height / 2
+    }
 
     override func layout() {
         super.layout()
