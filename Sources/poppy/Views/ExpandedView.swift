@@ -66,9 +66,42 @@ final class ExpandedView: NSView {
     /// Shows the sidebar at `width` (0 hides it), narrowing the terminal: one resize.
     func setSidebarWidth(_ width: CGFloat) {
         guard width != sidebarWidth else { return }
+        sidebarPreview = 0
         sidebarWidth = width
         sidebar.isHidden = width == 0
         layoutContent()
+    }
+
+    /// While a pill hovers over this panel and it has no sidebar (DESIGN §7.19): the sidebar
+    /// slides in at `width` and pushes the terminal right without resizing it (no reflow;
+    /// its right edge goes past the panel's meanwhile). 0 slides it back. A drop commits
+    /// the real layout with `setSidebarWidth`.
+    private(set) var sidebarPreview: CGFloat = 0
+    static let previewDuration: TimeInterval = 0.25
+
+    func previewSidebar(_ width: CGFloat) {
+        guard sidebarWidth == 0, width != sidebarPreview else { return }
+        sidebarPreview = width
+        let bottom = usageBar.isHidden ? Self.contentInset : UsageBar.height
+        let top = bounds.height - Self.headerHeight
+        if width > 0, sidebar.isHidden {
+            sidebar.frame = NSRect(x: 0, y: bottom, width: 0, height: top - bottom)
+            sidebar.isHidden = false
+        }
+        var terminal = contentHost.frame
+        terminal.origin.x = width > 0 ? width : Self.contentInset
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.previewDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            sidebar.animator().frame = NSRect(x: 0, y: bottom, width: width, height: top - bottom)
+            contentHost.animator().frame = terminal
+            settingsView.animator().frame = terminal
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.sidebarPreview == 0, self.sidebarWidth == 0 else { return }
+                self.sidebar.isHidden = true
+            }
+        })
     }
 
     /// The terminal (and the settings page over it) between the sidebar or the left inset,

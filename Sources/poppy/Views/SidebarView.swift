@@ -8,6 +8,12 @@ struct SidebarItem {
     var status: AgentStatus
     /// Tooltip and accessibility label: name, agent and status, so status isn't color alone.
     var label: String
+    /// An empty slot where a session is about to join (a pill hovering over the panel).
+    var isPlaceholder = false
+
+    static func placeholder() -> SidebarItem {
+        SidebarItem(name: "", harness: .other, status: .idle, label: "New session", isPlaceholder: true)
+    }
 }
 
 /// The sessions of a pill, on the left of the expanded panel (shown with 2+ sessions):
@@ -43,6 +49,11 @@ final class SidebarView: NSView {
     var onResize: ((_ width: CGFloat, _ ended: Bool) -> Void)?
     /// A double-click on the right edge: rail ⇄ names.
     var onToggleRail: (() -> Void)?
+    /// A row dragged past the 3 pt threshold: true if it may move (DESIGN §7.19). Then every
+    /// mouse move, and the mouse-up; the mouse is read from `NSEvent.mouseLocation`.
+    var onRowDragBegan: ((Int) -> Bool)?
+    var onRowDragMoved: (() -> Void)?
+    var onRowDragEnded: (() -> Void)?
 
     /// Logos only, names as tooltips.
     var isRail = false {
@@ -100,7 +111,8 @@ final class SidebarView: NSView {
         button.setAccessibilityLabel(label)
     }
 
-    func update(_ items: [SidebarItem], selected: Int, canClose: Bool) {
+    /// `hidden`: a row dragged out as a liquid blob, left blank in the list (DESIGN §7.19).
+    func update(_ items: [SidebarItem], selected: Int, canClose: Bool, hidden: Int? = nil) {
         self.canClose = canClose
         while rows.count < items.count {
             let row = SidebarRow()
@@ -115,6 +127,7 @@ final class SidebarView: NSView {
         for (index, item) in items.enumerated() {
             rows[index].index = index
             rows[index].show(item, selected: index == selected, canClose: canClose)
+            rows[index].alphaValue = index == hidden ? 0 : 1
         }
         needsLayout = true
     }
@@ -162,6 +175,31 @@ final class SidebarView: NSView {
         guard rows.indices.contains(index) else { return }
         layoutSubtreeIfNeeded()
         documentView.scrollToVisible(rows[index].frame)
+    }
+
+    // MARK: Row drag (DESIGN §7.19)
+
+    /// The row position under a screen point while it's over the sidebar (clamped to the
+    /// rows), else nil.
+    func rowSlot(atScreen point: NSPoint) -> Int? {
+        guard let window, !rows.isEmpty else { return nil }
+        let inWindow = window.convertPoint(fromScreen: point)
+        guard bounds.contains(convert(inWindow, from: nil)) else { return nil }
+        let y = documentView.convert(inWindow, from: nil).y
+        return min(max(Int(y / (Self.rowHeight + Self.rowSpacing)), 0), rows.count - 1)
+    }
+
+    /// What row `index` shows, and where it is on screen (for the drag image).
+    func rowSnapshot(_ index: Int) -> (image: NSImage?, frame: NSRect) {
+        guard rows.indices.contains(index), let window else { return (nil, .zero) }
+        let row = rows[index]
+        var image: NSImage?
+        if let rep = row.bitmapImageRepForCachingDisplay(in: row.bounds) {
+            row.cacheDisplay(in: row.bounds, to: rep)
+            image = NSImage(size: row.bounds.size)
+            image?.addRepresentation(rep)
+        }
+        return (image, window.convertToScreen(row.convert(row.bounds, to: nil)))
     }
 
     // MARK: Rename (DESIGN §7.17)
@@ -332,6 +370,8 @@ private final class SidebarRow: NSView {
     func show(_ item: SidebarItem, selected: Bool, canClose: Bool) {
         name = item.name
         label.stringValue = item.name
+        isPlaceholder = item.isPlaceholder
+        logo.isHidden = item.isPlaceholder
         logo.image = HarnessLogo.image(for: item.harness, points: Self.logoSize)
         logo.contentTintColor = item.status.tint ?? .labelColor
         toolTip = item.label
@@ -379,9 +419,14 @@ private final class SidebarRow: NSView {
     override func updateLayer() {
         layer?.cornerRadius = 6
         layer?.cornerCurve = .continuous
-        let alpha: CGFloat = isSelected ? 0.12 : isHovering ? 0.05 : 0
+        let alpha: CGFloat = isPlaceholder ? 0.06 : isSelected ? 0.12 : isHovering ? 0.05 : 0
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+        layer?.borderWidth = isPlaceholder ? 1 : 0
+        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.25).cgColor
     }
+
+    /// An empty slot (see `SidebarItem.isPlaceholder`): an outline, no logo or name.
+    private var isPlaceholder = false
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -410,7 +455,37 @@ private final class SidebarRow: NSView {
         return self
     }
 
-    override func mouseDown(with event: NSEvent) { sidebar?.rowClicked(self, event: event) }
+    /// Where a single click went down; a move past 3 pt from there drags the row.
+    private var dragStart: NSPoint?
+    private var dragging = false
+
+    override func mouseDown(with event: NSEvent) {
+        dragging = false
+        dragStart = event.clickCount == 1 ? NSEvent.mouseLocation : nil
+        sidebar?.rowClicked(self, event: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStart, let sidebar else { return }
+        if !dragging {
+            let mouse = NSEvent.mouseLocation
+            guard hypot(mouse.x - start.x, mouse.y - start.y) > 3 else { return }
+            guard sidebar.onRowDragBegan?(index) == true else {
+                dragStart = nil
+                return
+            }
+            dragging = true
+        }
+        sidebar.onRowDragMoved?()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let ended = dragging
+        dragging = false
+        dragStart = nil
+        if ended { sidebar?.onRowDragEnded?() }
+    }
+
     override func rightMouseDown(with event: NSEvent) { sidebar?.showMenu(for: self, event: event) }
     override func accessibilityPerformPress() -> Bool {
         sidebar?.onSelect?(index)

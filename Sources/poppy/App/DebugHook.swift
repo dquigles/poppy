@@ -20,6 +20,10 @@ final class DebugHook {
         var pill: Int?
         var new: Bool?
         var newPill: Bool?
+        /// A drop's target pill, and a new pill's point (M26).
+        var target: Int?
+        var x: Double?
+        var y: Double?
     }
 
     static let commandPrefix = "debug-cmd-"

@@ -39,9 +39,11 @@ Sources/poppy/
   App/AppVariant.swift              Poppy or Poppy Dev (§12.1)
   App/PillManager.swift             the pills: most recent, one open at a time, hotkey target, `poppy` routing, menu bar menu, shared settings, layout (§7.18)
   App/DebugHook.swift               Poppy Dev only: scripted control and state for scripts/test-*.py (§12.2)
+  App/LiquidDrag.swift              the Liquid Glass side of dragging rows and pills, DragPointer (§7.19)
   Config/Config.swift               Config (config.json) + PanelState (state.json) load/save
   Window/GlassPanel.swift           NSPanel subclass
   Window/PanelController.swift      state machine, frames, animation, observers, Poppy menu (§7.10)
+  Window/LiquidOverlay.swift        the liquid overlay window, glass shapes on springs (§7.19)
   Views/GlassBackgroundView.swift   NSGlassEffectView / NSVisualEffectView fallback
   Views/PillView.swift              collapsed content: click vs drag, right-click
   Views/HarnessLogo.swift           Harness detection + logo loading (§7.11)
@@ -66,6 +68,7 @@ scripts/render-logos.swift          renders Resources/Logos/src/*.svg to the PNG
 scripts/bundle.sh                   builds build/Poppy.app
 scripts/test-sessions.py            scripted session tests against Poppy Dev (§12.2)
 scripts/test-pills.py               scripted tests for several pills; restarts Poppy Dev (§12.2)
+scripts/test-drag.py                scripted tests for dragging between pills; restarts Poppy Dev (§12.2)
 docs/DESIGN.md, docs/PROGRESS.md
 ```
 
@@ -128,7 +131,7 @@ The style mask must be passed to `init`. Then:
 
 | Property | Value |
 |---|---|
-| `level` | `.statusBar` (if the M2 test fails: `.floating`; record in PROGRESS.md) |
+| `level` | `.statusBar` is set, but `isFloatingPanel = true` (set after it) resets it to `.floating` (3), so every panel really runs at `.floating` (found in M26 by listing the window levels; it works over fullscreen apps with `.fullScreenAuxiliary`, so it's left as is) |
 | `collectionBehavior` | `[.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]` |
 | `hidesOnDeactivate` | `false` |
 | `isFloatingPanel` | `true` |
@@ -324,7 +327,7 @@ In `PillView`, ignored while `isAnimating`:
   - If not already dragging and `hypot(delta.x, delta.y) > 3`, set `dragging = true`.
   - While dragging, `window.setFrameOrigin` to `startOrigin + delta` clamped (§7.4) in the screen under the mouse (`screen(for:)` of the frame if none), so the window never goes past a screen edge, yet still follows the mouse onto another display.
 - **`mouseUp`:**
-  - If dragging: clamp in `screen(for: frame)`, update `pillFrame`, save state.
+  - If dragging: clamp in `screen(for: frame)`, update `pillFrame`, save state. Since M26, dropped onto another pill or an open panel it merges into it instead (§7.19).
   - Otherwise: `controller.expand()`.
 - **`rightMouseDown`:** `controller.showContextMenu(event:in: self)`.
 
@@ -510,7 +513,7 @@ The panel is already hidden by the system, so nothing visible changes. The point
 **Verification (the user, by eye):** swipe slowly and fast between a fullscreen app and the desktop, and snap a swipe back, with the pill collapsed and with the panel expanded (key and not key): each time the panel reappears with the fade and scale (a fast swipe may reappear without it), never flashes at full opacity first, never stays invisible, and the glass renders correctly while scaling (if not: fade-only, i.e. drop step 4). Swipe again right after the panel reappears (re-arm mid-reveal). Press the hotkey mid-swipe: the panel expands and its rim comes back. Expanded and not key: it reappears with no user action (must pass). The glass looks right while fading, too (fallback: no fade; `glass.alphaValue = 1` without animation at the start of the reveal, scale only). Expanded and key: the window outline has no square hairline or other glitch while `hasShadow` is off (fallback: keep the shadow on while expanded, or fade only). Expand/collapse, the hotkey and drags must look and behave exactly as before (no `reveal:` log lines from them). With Reduce Motion on, it only fades.
 
 ### 7.17 Sessions and the sidebar (M24)
-One pill holds one or more **sessions**: each an agent with its own terminal view, command, working directory, status and name. Several pills are §7.18 (M25); the plan for dragging between them (M26) is `docs/MULTI-SESSION.md`. A pill with one session looks and behaves as before M24, apart from the new menu items and shortcuts.
+One pill holds one or more **sessions**: each an agent with its own terminal view, command, working directory, status and name. Several pills are §7.18 (M25); dragging sessions between them is §7.19 (M26). A pill with one session looks and behaves as before M24, apart from the new menu items and shortcuts.
 
 **`TerminalSession`** (§9.1) gains `id: UUID`, `customName: String?`, `defaultName` and `name` (`customName ?? defaultName`), `command`, `workingDirectory` (the launch spec's directory, normalized, §9.8), `attach(to:)` / `detach()` and `isShown`. `attach` starts the agent the first time; after that it puts the existing view back into the host, sized to `host.bounds` (one SIGWINCH if the size changed meanwhile). `detach` removes the view from its host, and the agent keeps running with its output still going into the view's buffer. A restart while detached creates the new view without adding it (`attached` is false). The status callbacks capture the session weakly, so they're rewired per session (`makeSession`).
 
@@ -551,6 +554,36 @@ Several pills can be on screen, each a `PanelController` with its own panel, pos
 - **Hotkey** (`manager.hotkeyPressed()`, §11): ignored while any pill animates; with no pill, a new pill.
 - **Usage:** one `UsageMonitor` per pill, with an app-wide cache (§9.7).
 - **Debug hook:** pill-level ops in the manager, the rest on `pill` (default the most recent), §12.2.
+
+### 7.19 Dragging sessions between pills (M26)
+Sessions move between pills by dragging, with their agent still running: a session keeps its id, name, status and unseen `done`, its view moves to the new pill's `contentHost` when it's next selected, and its status callbacks are rewired to the new pill (`wire`), so its badge, color and Auto-Open follow it. The layout is saved after every move.
+
+**What can be dragged where:**
+- **A sidebar row** (only with 2+ sessions; not while animating, renaming or asking to close; after the 3 pt threshold). A row selects on mouse-down, like a browser tab.
+  - Over the sidebar: it **reorders** live (`moveSession`; the selected session stays selected). Logs `session: moved "<name>" to row N`.
+  - Dropped outside its panel, not on a pill: a **new collapsed pill** centered on the drop point (clamped, §7.4), with the source pill's expanded size and sidebar (`PillManager.move`, `PanelController.init(…adopting:)`). Logs `pills: "<name>" dragged out to a new pill (N pills)`.
+  - Dropped on a collapsed pill: it **joins the end** of that pill's sidebar (`giveAway` + `adopt`). The target keeps its position, selected session and collapsed state. Logs `pills: "<name>" dropped onto another pill`.
+  - Dropped anywhere else in its own panel: nothing changes but the reorder.
+  - The source is never left empty, so its sidebar hides when one session is left.
+- **A pill** (§7.8):
+  - Dropped on a collapsed pill: **all** its sessions join the end of the target's sidebar (`PillManager.merge`); the target keeps its position, selection and collapsed state; the dragged pill goes (`remove`, which ends nothing: its sessions left first, `giveAwayAll`). Logs `pills: merged a pill of N into one of M`.
+  - Dropped on an **open panel** (added at the user's request): the same merge; the panel stays open on the session it showed, and its sidebar appears if it had one session. A collapsed pill over the panel wins.
+- Drop targets (`dropTarget(at:excluding:expanded:)`): a collapsed pill under the mouse (not animating); for a pill drag, else an open panel under it (not in a live resize).
+
+**Liquid Glass effects** (`LiquidDrag`, `LiquidOverlay`; only with native glass, `GlassBackgroundView.isLiquid`, and while a pill's glass can be lent, `canLendGlass`). The system merges glass only within one `NSGlassEffectContainerView`, so only within one window. So during a drag the glass of what takes part is drawn by one transparent **overlay window** (one screen's frame, `ignoresMouseEvents`, all Spaces, shadow on: its shadow draws the rims) whose container (`spacing` 28) merges shapes that come close and lets them pull apart like liquid. Each shape is a `LiquidBlob` (an `NSGlassEffectView`) on springs (`GlassShape`: center, size and radius, stepped at 120 Hz with fixed time steps).
+- **Lending a pill's glass** (`lend` / `giveBack`): its blob is added at the pill's frame; on the next turn the pill hides its glass (`lendGlass`: `GlassBackgroundView.isGlassHidden`, window shadow off), so nothing flashes. Its content stays in its window, raised a window level above the overlay meanwhile (its level is restored after). Only the glass's backdrop layer is hidden: an `NSGlassEffectView` shows its content through portal layers that hide the content itself, so hiding the view (or the branch with the backdrop) hides the content too; the content has to stay inside the glass, because content beside it doesn't get the glass's dark text over light backgrounds (all checked by screenshot). This is a private structure (`CABackdropLayer`), looked up each time; without it the effects are off and dragging works as below without Liquid Glass.
+- **Window levels:** the overlay sits a level above the panels (`.floating` + 1, §5) and lent pills one above it. Ordering a never-activated app's windows relative to each other didn't hold (the overlay's glass covered the pills' logos), so levels are used instead.
+- **Open panels never lend their glass.** Glass adapts to what's behind it (light glass and dark content over light backgrounds) only while it's small, or when it grew from small by an animation after being drawn small; a panel's glass grows from its pill, so it adapts, but a copy made at full size in the overlay gets a fixed flatter grey and a brighter rim, so the whole panel changed look whenever a drag started (checked by screenshot over a white window and over photos). Growing the copy from small worked only while visible, which changed the panel for 0.4 s, so the user chose to leave the panel alone (no neck of glass from a panel's edge).
+- **A row drag:** while the row is out of the sidebar it's a glass chip (its logo and name, `LiquidBlob` with content) floating above the panel; its row is left blank (`setDraggedRowHidden`). Over the panel it follows the mouse as a row; more than 12 pt outside (`tearMargin`) it becomes a pill under the mouse (the name fades, the logo grows to the pill's size), a row again back over the panel. Back over the sidebar it springs into its slot. Collapsed pills within 120 pt (center to center) join the overlay and flow together with it; they leave past 160 pt; the one a drop would land in swells 3 pt. Logged `drag: "<name>" out of the panel` / `back over the panel`.
+  - The drop: back into its row (over the panel, or still within the margin); into a pill: the chip flows into its glass, its content fading, and the target bounces; elsewhere: the new pill is made at its final frame but hidden, the chip lands on it, then the pill shows. The model changes happen at the drop; the animation follows.
+- **A pill drag:** pills within 120 pt join the overlay with the dragged one; the dragged glass is set to the window's frame on every move, not on a spring (it trailed the logo and separated from it). The dragged pill's content (logo, usage ring, badge, DEV tag, `setContentAlpha`) fades from 120 pt to 0.6 diameters from the closest pill, and over the last 40 pt before an open panel's edge. Dropped on a pill, its glass flows in and the target bounces.
+- **A pill over an open panel:** the panel shows an empty outlined slot at the end of its sidebar for each of the pill's sessions (`setDropPreview`, `SidebarItem.placeholder`). With one session, the sidebar slides in (0.25 s, `ExpandedView.previewSidebar`) and pushes the terminal right without resizing it (no reflow; its right edge goes past the panel meanwhile), and slides away if the pill leaves. On the drop the pill becomes a glass chip with its selected session's logo and name, flying from the pill into the first slot and turning from a circle into a row; then the merge, the slot becomes the row, and the terminal resizes once (`setSidebarWidth`). Logged `drag: "<name>" into an open panel`.
+- **Exact frames:** windows are never moved or sized from a spring's values (a spring's last values are a fraction of a point off, and using them grew pills 2 pt per merge in the probe).
+- **Without Liquid Glass** (the fallback, or `canLendGlass` false): a dragged row's image floats under the mouse (`DragImageWindow`, above every pill, all Spaces), a pill under it gets an accent ring and fill (`PillView.setDropHighlight`), and a dragged pill dims to 50% over a target; drops work the same, without animation.
+
+**Mechanics:** drags are manual, like the pill drag: the row (or pill) that got the mouse-down keeps getting `mouseDragged` and `mouseUp` after the mouse leaves its window, and pill frames are hit-tested in screen coordinates. A probe confirmed this in a never-activated non-activating panel before M26 (no app activation, the frontmost app unchanged). An `NSDraggingSession` would have needed a pasteboard type and drop registration on collapsed pills. The views that track the mouse never leave their window (moving one out ended the drag in a probe), which is also why content isn't moved out of the glass to lend it.
+
+**Claude's calls, open to change:** the distances and springs above (tuned by screenshot, not yet by feel); a dropped row that hasn't left the panel goes back; an open panel keeps showing its own session after a drop; the chip shows the dragged pill's selected session.
 
 ## 8. Configuration and state
 
@@ -924,6 +957,8 @@ The user chose to replace the Claude meter's source (the Keychain token + `api.a
 
 `appLog("glass: native")` or `appLog("glass: fallback")` is logged once when the view is created.
 
+**Content stays inside the glass** (M26): the glass draws its content with dark text over light backgrounds; content beside it stayed white on light glass (checked by screenshot). `isGlassHidden` hides only the glass effect, for the liquid overlay (§7.19). Glass adapts like that only while small, or after growing from small by an animation: the panel does (it grows from the pill), glass made large doesn't.
+
 ## 11. Global hotkey (M6)
 
 **Ownership (M10).** `AppDelegate` owns a `HotKeyManager` (`Hotkey/HotKeyManager.swift`) and hands it to `PanelController.hotKeys` (weak), so the settings page can show and change the hotkey (§7.9). The manager owns `GlobalHotKey?` and `current: HotKeyCombo?` (the chosen combo); recording is driven by the page's field (§11.2).
@@ -1054,19 +1089,20 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 
 ### 12.2 Debug hook and scripted tests (M24)
 **`DebugHook`** (`App/DebugHook.swift`) lets scripts drive Poppy Dev without the mouse. `AppDelegate` creates it only when `AppVariant.isDev`, so the installed Poppy never has it.
-- **Reading commands:** every 0.1 s it reads `debug-cmd-<id>.json` from Poppy Dev's own `run/` folder (the same folder, and the same trust, as the `poppy` command's request files, §9.9). Each command is `{id, op, index?, command?, directory?, name?, key?, value?, width?, pill?, new?, newPill?}`, deleted after it's read.
-- **Pill ops** (M25, `PillManager.debugRun`): `newPill` (command, directory, value: show), `hotkey` (the hotkey's handler), `hotkeyTarget` (key), `apply` (a `LaunchRequest`: directory, command, new, newPill, value: show), `openPill` (pill), `statusMenu` (builds the menu bar menu), `reloadLayout` (reads back the saved pills).
+- **Reading commands:** every 0.1 s it reads `debug-cmd-<id>.json` from Poppy Dev's own `run/` folder (the same folder, and the same trust, as the `poppy` command's request files, §9.9). Each command is `{id, op, index?, command?, directory?, name?, key?, value?, width?, pill?, new?, newPill?, target?, x?, y?}` (`target`, `x`, `y` since M26), deleted after it's read.
+- **Pill ops** (M25, `PillManager.debugRun`): `newPill` (command, directory, value: show), `hotkey` (the hotkey's handler), `hotkeyTarget` (key), `apply` (a `LaunchRequest`: directory, command, new, newPill, value: show), `openPill` (pill), `statusMenu` (builds the menu bar menu), `reloadLayout` (reads back the saved pills), and since M26 `dropRow` (row `index` of `pill` onto pill `target`, or with no target out to a new pill at `x`, `y`), `dropPill` (`pill` merged into `target`) and `liquidHold` (`value`: hold `pill`'s glass in the liquid overlay at rest, to compare its look).
 - **Running them:** every other op goes to pill `pill` (default the most recent), whose `PanelController.debugRun` runs it through the same code as the UI. The ops are:
   - `state`;
   - `new`, `click`, `close`, `confirm` (value: close or cancel), `rename` (name, or null to cancel), `restart`;
   - `cmdT`, `cmdW`, `cmdN` (through GlassPanel's callbacks, as the keys);
-  - `rail`, `dragSidebar` (width);
+  - `rail`, `dragSidebar` (width), `moveRow` (index to `target`, M26);
+  - `drag` (M26): one step of a scripted mouse drag at `x`, `y`, `key` one of `rowBegin` (index), `rowMove`, `rowEnd`, `pillMove`, `pillEnd`; it runs the same code as the mouse, with `DragPointer.scripted` standing in for the mouse position;
   - `expand` (value: focus), `collapse`, `focus` (make key);
   - `blur` (a 1×1 transparent stand-in panel takes key, so the panel is expanded but not key);
   - `autoOpen` (key, value);
   - `settings` (value);
   - `snapshot` (a PNG of the panel's content over the window color, at the path given as `directory`; glass and vibrant text don't render).
-- **Answering:** it writes `debug-state-<id>.json` with `manager.debugState(for:)`: `pills` (each one's `state`, `key`, `x`/`y`, `selected` and sessions), `recent`, `hotkeyTarget`, `menuPills` (the menu bar's pill list as last built), and the targeted pill's `debugState()`: the panel (`state`, `animating`, `key`, `settings`, `confirm`, `confirmAligned`, `sidebarWidth`, `terminalWidth`, `rail`, `sidebarScrolls`, `selected`, `header`, the pill's `status`, `badge` and `label`, `autoOpenedFor`) and every session (`id`, `name`, `custom`, `command`, `directory`, `status`, `statusFile`, `pid`, `exited`, `shown`), plus `error` if the op failed. It logs `debug hook: <op>`.
+- **Answering:** it writes `debug-state-<id>.json` with `manager.debugState(for:)`: `pills` (each one's `state`, `key`, `x`/`y`, `selected` and sessions), `recent`, `hotkeyTarget`, `menuPills` (the menu bar's pill list as last built), and the targeted pill's `debugState()`: the panel (`state`, `frame` (M26), `animating`, `key`, `settings`, `confirm`, `confirmAligned`, `sidebarWidth`, `terminalWidth`, `rail`, `sidebarScrolls`, `selected`, `header`, the pill's `status`, `badge` and `label`, `autoOpenedFor`) and every session (`id`, `name`, `custom`, `command`, `directory`, `status`, `statusFile`, `pid`, `exited`, `shown`), plus `error` if the op failed. It logs `debug hook: <op>`.
 
 **`scripts/test-sessions.py`** (run with `./scripts/dev.sh && ./scripts/test-sessions.py`):
 - **How it works:** it starts fake agents (`cat` in temporary folders) and fakes their hooks by writing status words into each session's status file, exactly as the hooks do (§9.6). Then it checks the state.
@@ -1082,6 +1118,8 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
   - back to one session.
 - **While it runs:** Poppy Dev briefly takes the keyboard when a test needs the panel focused. A click in another app meanwhile collapses the panel (§6.3) and can fail a test. At the end it puts the Auto-Open settings back.
 - **What it can't check:** real key presses, hover, the look on glass. Those stay in the user's manual test.
+
+**`scripts/test-drag.py`** (M26; `./scripts/dev.sh && ./scripts/test-drag.py`): restarts Poppy Dev with `cat` agents and covers reordering, a working session dragged out to a new pill (same agent, status still shown, rewired), dropped onto a collapsed pill (position, selection, collapsed kept; source sidebar hidden), Auto-Open from a moved session, merging a 3-session pill into a 2-session one (order, position, selection, no restarts, saved), a pill dropped onto an open panel, and unique names and status files. The look of the liquid effects was checked separately with screenshots of `drag` steps; feel and real mouse drags stay in the user's test.
 
 **`scripts/test-pills.py`** (M25; `./scripts/dev.sh && ./scripts/test-pills.py`): restarts Poppy Dev with a pre-M25 `state.json` and `command` `cat`, and covers the old file loading as one pill, new pills not overlapping, one open at a time, the menu bar's pill list, the three hotkey modes, Auto-Open busy in another pill and across pills, `poppy` reuse / `-c` / `--new` / `--new-pill` / `-b`, the saved layout, a relaunch restoring it with fresh agents, a missing folder starting at home, and closing every pill then the hotkey making one. At the end it restores Poppy Dev's `config.json` and `state.json` and starts it again.
 
@@ -1114,6 +1152,7 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 | M23 | `App/AppVariant.swift`; `bundle.sh` builds Poppy Dev by default (`--release` for Poppy.app, used by `install.sh`): own bundle ID, `poppy-dev` executable, `~/.config/poppy-dev/`, no default hotkey, DEV tag on the pill (§12.1) | — |
 | M24 | Sessions and the sidebar in one pill: `Views/SidebarView.swift`, `ConfirmView`, `TerminalSession` id/name/attach/detach, `PanelController` sessions (＋, ⌘T, ⌘W, ⌘1–9, New/Rename/Close Session, close question, rename, auto-numbered names), the pill's most-urgent color, badge and label, per-session done seen and Auto-Open, usage following the selected session; app-wide status-file generation (§9.6); `App/DebugHook.swift` and `scripts/test-sessions.py` for Poppy Dev (§7.17, §7.11, §7.15, §9.7, §12.2) | The layout isn't saved: a relaunch starts one session (M25). The last session can't be closed. |
 | M25 | Several pills: `App/PillManager.swift` (pills, most recent, one expanded at a time, placement without overlap, global settings, the menu bar menu with its pill list, New Pill), "Hotkey opens" (`hotkeyTarget`: recent / urgent / cycle), Auto-Open across pills, `poppy` reuse-or-add with `--new` / `--new-pill`, closing the last session removes the pill (none left: menu bar only), the saved layout (`PanelState.pills`, old files migrate), the app-wide usage cache; `scripts/test-pills.py` (§7.18, §8.2, §9.7, §9.9, §11, §12.2) | — |
+| M26 | Dragging between pills: row reorder, a row out to a new pill or onto a pill, a pill onto a pill or an open panel (sessions keep running, rewired, layout saved); the Liquid Glass effects (`App/LiquidDrag.swift`, `Window/LiquidOverlay.swift`: merging glass, a row chip turning into a pill, the pill content fade, the sidebar preview with an empty slot and the chip snapping into it), the plain image and highlight without them; content back inside the glass with only its backdrop hidden to lend it; `scripts/test-drag.py` and the `drag`, `dropRow`, `dropPill`, `moveRow`, `liquidHold` debug ops (§7.8, §7.19, §10, §12.2) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -1149,3 +1188,4 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 23. Whether `claude -p /usage` prints the limit lines for Pro, Max and Team plans and for an API-key login (which has no limits: expect the "couldn't read" failure or an error), what a signed-out or rate-limited Claude Code prints, and that no user hooks fire (checked once with `--debug hooks`; the check should be repeated after Claude Code updates): M21.
 24. Whether a detached SwiftTerm view keeps up with output and comes back correct at a different size (one SIGWINCH, no garbled screen); memory and CPU with many live sessions (one 0.25 s status timer each); Auto-Open across sessions with real agents (two Claude sessions in one folder, one asking for permission while another is selected); the close question's look on the real glass: M24 (scripted tests passed; the user tested commands, hover, rename, the ⌄ menu, light and dark mode, and the close question).
 25. Several pills: real clicks from one pill to another, keyboard focus after one folds and another opens (and after an open pill's last session closes), the real hotkey in each mode over fullscreen apps and with the mouse on a second display, the `poppy` command through `open -a` (running and launching), two pills with Claude sharing usage numbers, quitting from the menu, saved positions across displays, CPU and memory with several pills: M25 (scripted tests passed; the user checked all of these).
+26. Dragging (M26): feel of the springs and distances with a real mouse, drags over fullscreen apps and onto a second display (the overlay covers one screen and moves with the mouse), many sessions in one pill after merges, whether the private glass structure (`CABackdropLayer` inside `NSGlassEffectView`) survives macOS updates (the effects turn off if not), Codex hooks with several Codex sessions at once: M26 (scripted tests and screenshots passed; the user tested the drags and approved the look; fullscreen apps and a second display weren't reported on separately).

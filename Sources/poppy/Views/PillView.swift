@@ -32,6 +32,8 @@ final class PillView: NSView {
     /// (DESIGN §7.11, §9.7).
     private let ring = CAShapeLayer()
     private var usage: UsageWindow?
+    /// Shown while a dragged row or pill is over this pill (DESIGN §7.19).
+    private let dropRing = CAShapeLayer()
 
     /// `title` names the CLI (DESIGN §7.11); it labels the pill when the harness isn't recognized.
     init(frame: NSRect, harness: Harness, title: String) {
@@ -60,6 +62,8 @@ final class PillView: NSView {
         ring.lineCap = .round
         ring.isHidden = true
         layer?.addSublayer(ring)
+        dropRing.isHidden = true
+        layer?.addSublayer(dropRing)
         registerForDraggedTypes(Attachments.dropTypes)  // drop onto the pill (DESIGN §9.10)
         if AppVariant.isDev { addDevTag() }
         diameter = frame.width
@@ -174,6 +178,9 @@ final class PillView: NSView {
         ring.frame = bounds
         ring.path = path
         ring.lineWidth = lineWidth
+        dropRing.frame = bounds
+        dropRing.path = CGPath(ellipseIn: bounds.insetBy(dx: lineWidth, dy: lineWidth), transform: nil)
+        dropRing.lineWidth = lineWidth
         CATransaction.commit()
     }
 
@@ -186,7 +193,16 @@ final class PillView: NSView {
     private func updateRingColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             ring.strokeColor = UsageStyle.ringColor
+            dropRing.strokeColor = NSColor.controlAccentColor.cgColor
+            dropRing.fillColor = NSColor.controlAccentColor.withAlphaComponent(0.25).cgColor
         }
+    }
+
+    /// An accent ring and fill: "drop here".
+    func setDropHighlight(_ on: Bool) {
+        guard dropRing.isHidden == on else { return }
+        updateRingColors()
+        dropRing.isHidden = !on
     }
 
     /// Called when the pill size preset changes (DESIGN §7.14).
@@ -224,10 +240,12 @@ final class PillView: NSView {
     override func mouseDragged(with event: NSEvent) {
         // An animation started mid-drag (e.g. the hotkey) owns the frame now.
         guard let controller, !controller.isAnimating, let window else {
+            if drag.isDragging { controller?.pillDragCancelled() }
             drag.cancel()
             return
         }
         drag.moved(window: window)
+        if drag.isDragging { controller.pillDragMoved() }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -263,7 +281,7 @@ struct WindowDrag {
     private var startMouse = NSPoint.zero
     private var startOrigin = NSPoint.zero
     private(set) var isTracking = false
-    private var isDragging = false
+    private(set) var isDragging = false
 
     mutating func cancel() {
         isTracking = false

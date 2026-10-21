@@ -158,6 +158,164 @@ final class PillManager: NSObject {
         pills.forEach { $0.terminateAll() }
     }
 
+    // MARK: - Dragging between pills (DESIGN §7.19)
+
+    /// The Liquid Glass side of dragging (made on first use; nil without Liquid Glass, where
+    /// the drag image and the accent highlight below are used instead).
+    private var liquidStorage: AnyObject?
+
+    @available(macOS 26, *)
+    private var liquid: LiquidDrag? {
+        // Off if the glass can't be hidden apart from its content (a later macOS).
+        guard GlassBackgroundView.isLiquid, pills.first?.canLendGlass ?? true else { return nil }
+        if let made = liquidStorage as? LiquidDrag { return made }
+        let made = LiquidDrag(manager: self)
+        liquidStorage = made
+        return made
+    }
+
+    /// The dragged row's image, above every pill; made once and reused.
+    private var dragImage: DragImageWindow?
+    /// Where the row was grabbed, from its bottom-left corner.
+    private var dragOffset = NSPoint.zero
+    private weak var highlighted: PanelController?
+
+    /// A collapsed pill other than `excluded` under `mouse`: where a drop goes. With
+    /// `expanded`, an open panel under it too (a pill dropped onto it); a collapsed pill
+    /// over that panel comes first.
+    func dropTarget(at mouse: NSPoint, excluding excluded: PanelController, expanded: Bool = false) -> PanelController? {
+        let under = pills.filter { $0 !== excluded && !$0.isAnimating && NSMouseInRect(mouse, $0.panel.frame, false) }
+        return under.first { $0.state == .collapsed }
+            ?? (expanded ? under.first { $0.state == .expanded && !$0.panel.inLiveResize } : nil)
+    }
+
+    /// Highlights the pill a drop would go to; true if there is one.
+    @discardableResult
+    func highlightDropTarget(excluding excluded: PanelController) -> Bool {
+        let target = dropTarget(at: DragPointer.location, excluding: excluded)
+        if target !== highlighted {
+            highlighted?.setDropHighlight(false)
+            target?.setDropHighlight(true)
+            highlighted = target
+        }
+        return target != nil
+    }
+
+    func clearDropHighlight() {
+        highlighted?.setDropHighlight(false)
+        highlighted = nil
+    }
+
+    func rowDragBegan(_ session: TerminalSession, from source: PanelController, image: NSImage?, frame: NSRect) {
+        if #available(macOS 26, *), let liquid {
+            liquid.rowDragBegan(session, from: source, frame: frame)
+            return
+        }
+        let mouse = DragPointer.location
+        dragOffset = NSPoint(x: mouse.x - frame.minX, y: mouse.y - frame.minY)
+        let window = dragImage ?? DragImageWindow()
+        dragImage = window
+        window.show(image, size: frame.size)
+    }
+
+    /// Over the source's sidebar the row itself moves (no image); elsewhere the image
+    /// follows the mouse.
+    func rowDragMoved(from source: PanelController, overSidebar: Bool, rowFrame: NSRect) {
+        if #available(macOS 26, *), let liquid {
+            liquid.rowDragMoved(overSidebar: overSidebar, rowFrame: rowFrame)
+            return
+        }
+        let mouse = DragPointer.location
+        if overSidebar {
+            dragImage?.orderOut(nil)
+        } else if let dragImage {
+            dragImage.setFrameOrigin(NSPoint(x: mouse.x - dragOffset.x, y: mouse.y - dragOffset.y))
+            dragImage.orderFrontRegardless()
+        }
+        highlightDropTarget(excluding: source)
+    }
+
+    /// Dropped over its own panel: the reorder (already done) stays. Over another pill: it
+    /// joins that pill. Anywhere else: a new collapsed pill there. Its agent keeps running.
+    func rowDragEnded(_ session: TerminalSession, from source: PanelController, overPanel: Bool) {
+        if #available(macOS 26, *), let liquid {
+            if !liquid.rowDragEnded(overPanel: overPanel) { saveLayout() }  // only reordered
+            return
+        }
+        dragImage?.orderOut(nil)
+        let mouse = DragPointer.location
+        let target = overPanel ? nil : dropTarget(at: mouse, excluding: source)
+        clearDropHighlight()
+        if overPanel {
+            saveLayout()
+            return
+        }
+        move(session, from: source, to: target, newPillAt: mouse)
+    }
+
+    /// `session` leaves `source` (never its last) for `target`, or for a new collapsed pill
+    /// centered on `point` (clamped to that screen), which is returned.
+    @discardableResult
+    func move(_ session: TerminalSession, from source: PanelController, to target: PanelController?,
+              newPillAt point: NSPoint = .zero) -> PanelController? {
+        source.giveAway(session)
+        if let target {
+            appLog("pills: \"\(session.name)\" dropped onto another pill")
+            target.adopt([session])
+        } else {
+            let diameter = pillDiameter
+            let rect = NSRect(x: point.x - diameter / 2, y: point.y - diameter / 2, width: diameter, height: diameter)
+            let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? PanelController.screen(for: rect)
+            var saved = source.savedPill  // the same expanded size and sidebar
+            saved.origin = nil
+            saved.selected = 0
+            saved.sessions = []
+            let pill = PanelController(manager: self, saved: saved, frame: PanelController.clamp(rect, in: screen),
+                                       adopting: [session])
+            pills.append(pill)
+            appLog("pills: \"\(session.name)\" dragged out to a new pill (\(pills.count) pills)")
+            saveLayout()
+            return pill
+        }
+        saveLayout()
+        return nil
+    }
+
+    /// A pill is dragged: true if it should dim (the plain highlight shows a pill under it).
+    func pillDragMoved(_ pill: PanelController) -> Bool {
+        if #available(macOS 26, *), let liquid {
+            liquid.pillDragMoved(pill)
+            return false
+        }
+        return highlightDropTarget(excluding: pill)
+    }
+
+    func pillDragCancelled() {
+        if #available(macOS 26, *), let liquid { liquid.cancel() }
+        clearDropHighlight()
+    }
+
+    /// A pill dropped onto another: all its sessions join the end of that one's sidebar,
+    /// which keeps its position, selection and collapsed state; the dropped pill goes.
+    /// False if it wasn't over a pill.
+    func pillDropped(_ pill: PanelController) -> Bool {
+        if #available(macOS 26, *), let liquid {
+            return liquid.pillDropped(pill) { [weak self] target in self?.merge(pill, into: target) }
+        }
+        let target = dropTarget(at: DragPointer.location, excluding: pill, expanded: true)
+        clearDropHighlight()
+        guard let target else { return false }
+        merge(pill, into: target)
+        return true
+    }
+
+    private func merge(_ pill: PanelController, into target: PanelController) {
+        appLog("pills: merged a pill of \(pill.sessionCount) into one of \(target.sessionCount)")
+        target.adopt(pill.giveAwayAll())
+        remove(pill)
+        if recent == nil || recent === pill { recent = target }
+    }
+
     // MARK: - Global settings (DESIGN §7.9)
 
     func setPillDiameter(_ diameter: CGFloat) {
@@ -408,6 +566,25 @@ final class PillManager: NSObject {
         case "statusMenu":
             populateStatusMenu(statusMenu)
             return nil
+        case "dropRow":
+            // A row of `pill` dropped onto pill `target`, or (no target) out at x, y.
+            guard let source = debugPill(command), source.sessionCount > 1,
+                  let index = command.index, source.allSessions.indices.contains(index) else { return "needs pill and index (2+ sessions)" }
+            let target = command.target.flatMap { pills.indices.contains($0) ? pills[$0] : nil }
+            guard target !== source else { return "target is the source" }
+            move(source.allSessions[index], from: source, to: target,
+                 newPillAt: NSPoint(x: command.x ?? 400, y: command.y ?? 400))
+            saveLayout()
+            return nil
+        case "dropPill":
+            guard let source = debugPill(command), let index = command.target, pills.indices.contains(index),
+                  pills[index] !== source else { return "needs pill and another target" }
+            merge(source, into: pills[index])
+            return nil
+        case "liquidHold":
+            guard let pill = debugPill(command) else { return "no pill" }
+            if #available(macOS 26, *), let liquid { liquid.debugHold(pill, command.value ?? true) } else { return "no liquid glass" }
+            return nil
         case "reloadLayout":
             // What a relaunch would restore, without restarting Poppy: the saved file's pills.
             let saved = PanelState.load().pills ?? []
@@ -444,6 +621,43 @@ final class PillManager: NSObject {
             ]
         }
         return state
+    }
+}
+
+/// The dragged sidebar row, floating under the mouse above every pill on every Space
+/// (DESIGN §7.19). It never takes the mouse or the keyboard.
+private final class DragImageWindow: NSPanel {
+    private let imageView = NSImageView()
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 160, height: 28),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        level = .statusBar
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        hidesOnDeactivate = false
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        ignoresMouseEvents = true
+        animationBehavior = .none
+        isReleasedWhenClosed = false
+        let glass = GlassBackgroundView(frame: NSRect(x: 0, y: 0, width: 160, height: 28), cornerRadius: 8)
+        glass.autoresizingMask = [.width, .height]
+        imageView.frame = glass.contentView.bounds
+        imageView.autoresizingMask = [.width, .height]
+        imageView.imageScaling = .scaleNone
+        imageView.unregisterDraggedTypes()
+        glass.contentView.addSubview(imageView)
+        contentView = glass
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    /// Sized like the row; shown at the first move outside the sidebar.
+    func show(_ image: NSImage?, size: NSSize) {
+        imageView.image = image
+        setContentSize(size)
     }
 }
 

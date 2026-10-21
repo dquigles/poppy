@@ -1,9 +1,53 @@
 import AppKit
 
 /// Liquid Glass on macOS 26+, NSVisualEffectView fallback otherwise (DESIGN §10).
-/// Callers add their content to `contentView`.
+/// Callers add their content to `contentView`, inside the glass: the glass switches it to
+/// dark text over light backgrounds (beside it, it stayed white on light glass; checked
+/// by screenshot).
+/// Marks the macOS 26 glass view in `glassLayers` (a type check that compiles for macOS 14).
+protocol NSGlassEffectViewMarker {}
+@available(macOS 26, *)
+extension NSGlassEffectView: NSGlassEffectViewMarker {}
+
 final class GlassBackgroundView: NSView {
     let contentView = NSView()
+
+    /// The glass is drawn by the liquid overlay meanwhile (DESIGN §7.19); the content
+    /// still shows, in place and in the glass (a view tracking the mouse must never leave
+    /// the window, and content outside the glass doesn't adapt). Only the glass effect's
+    /// own layers are hidden: see `glassLayers`.
+    var isGlassHidden = false {
+        didSet {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            Self.glassLayers(in: backing).forEach { $0.isHidden = isGlassHidden }
+            CATransaction.commit()
+        }
+    }
+
+    /// Whether the glass can be hidden apart from its content now (it has been drawn and
+    /// has the layers `glassLayers` looks for).
+    var canHideGlass: Bool { !Self.glassLayers(in: backing).isEmpty }
+
+    /// An NSGlassEffectView (macOS 26) draws the glass with a CABackdropLayer (the blur
+    /// and refraction, with its rim) and shows its content through portal layers beside
+    /// it, which hide the content itself: hiding the whole view, or the branch holding the
+    /// backdrop, hides the content too. Hiding just the backdrop leaves the content.
+    /// A private structure, so it's looked up each time and the effects are off without it.
+    private static func glassLayers(in glass: NSView) -> [CALayer] {
+        func find(_ layer: CALayer) -> [CALayer] {
+            String(describing: type(of: layer)) == "CABackdropLayer" ? [layer] : (layer.sublayers ?? []).flatMap(find)
+        }
+        guard let layer = glass.layer, glass is NSGlassEffectViewMarker else { return [] }
+        return find(layer)
+    }
+
+    /// Liquid Glass (not the fallback): the liquid drag effects need it, and a glass that
+    /// can be hidden apart from its content (`canHideGlass`).
+    static var isLiquid: Bool {
+        guard #available(macOS 26, *) else { return false }
+        return ProcessInfo.processInfo.environment["POPPY_FORCE_FALLBACK"] != "1"
+    }
 
     var cornerRadius: CGFloat {
         didSet { applyCornerRadius() }

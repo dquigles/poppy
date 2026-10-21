@@ -120,10 +120,11 @@ final class PanelController: NSObject {
     /// The settings page shows and records the hotkey through it (DESIGN §7.9).
     private var hotKeys: HotKeyManager? { manager.hotKeys }
 
-    /// A pill with `saved`'s sessions (never empty), each started fresh, at `frame`.
-    init(manager: PillManager, saved: SavedPill, frame: NSRect) {
+    /// A pill with `saved`'s sessions (never empty), each started fresh, at `frame`; or with
+    /// `adopting`'s running sessions instead (a row dragged out, DESIGN §7.19).
+    init(manager: PillManager, saved: SavedPill, frame: NSRect, adopting: [TerminalSession] = []) {
         self.manager = manager
-        let first = saved.sessions[0].command
+        let first = adopting.first?.command ?? saved.sessions[0].command
         usage = UsageMonitor(command: first, enabled: manager.config.showUsage)
         expandedSize = saved.expandedSize.map {
             NSSize(width: max($0.width, ExpandedView.minSize.width), height: max($0.height, ExpandedView.minSize.height))
@@ -155,7 +156,11 @@ final class PanelController: NSObject {
         glass.contentView.addSubview(pillView)
         glass.contentView.addSubview(expandedView)
 
-        for each in saved.sessions {
+        for each in adopting {
+            wire(each)
+            sessions.append(each)
+        }
+        for each in adopting.isEmpty ? saved.sessions : [] {
             // A folder that's gone falls back to the home folder (logged), as `cwd` does.
             var resolved = manager.config
             resolved.cwd = each.cwd
@@ -166,7 +171,7 @@ final class PanelController: NSObject {
         selectedIndex = min(max(saved.selected ?? 0, 0), sessions.count - 1)
         sessionsChanged()  // the sidebar first, so the agents start at their final width
         // Every agent starts now, as at any launch; only the selected one stays in the panel.
-        for (index, each) in sessions.enumerated() where index != selectedIndex {
+        for (index, each) in sessions.enumerated() where index != selectedIndex && adopting.isEmpty {
             each.attach(to: expandedView.contentHost)
             each.detach()
         }
@@ -492,16 +497,21 @@ final class PanelController: NSObject {
         let new = TerminalSession(config: sessionConfig)
         new.customName = name
         new.defaultName = uniqueName(Self.directoryName(new.workingDirectory), for: new)
-        new.onViewReplaced = { [weak self, weak new] in
-            if let self, new === session { refocus() }
-        }
-        new.onStatusChange = { [weak self, weak new] status in
-            if let self, let new { statusChanged(new, status) }
-        }
-        new.onModelChange = { [weak self, weak new] model in
-            if let self, new === session { usage.setAgentModel(model) }
-        }
+        wire(new)
         return new
+    }
+
+    /// The session's callbacks go to this pill (also when one moves here, DESIGN §7.19).
+    private func wire(_ wired: TerminalSession) {
+        wired.onViewReplaced = { [weak self, weak wired] in
+            if let self, wired === session { refocus() }
+        }
+        wired.onStatusChange = { [weak self, weak wired] status in
+            if let self, let wired { statusChanged(wired, status) }
+        }
+        wired.onModelChange = { [weak self, weak wired] model in
+            if let self, wired === session { usage.setAgentModel(model) }
+        }
     }
 
     /// `base`, or "base 2", "base 3"… (the lowest free number) if another session anywhere
@@ -532,6 +542,9 @@ final class PanelController: NSObject {
         sidebar.onNewMenu = { [weak self] view in self?.showNewSessionMenu(from: view) }
         sidebar.onToggleRail = { [weak self] in self?.toggleSidebarRail() }
         sidebar.onResize = { [weak self] width, ended in self?.sidebarDragged(to: width, ended: ended) }
+        sidebar.onRowDragBegan = { [weak self] index in self?.rowDragBegan(index) ?? false }
+        sidebar.onRowDragMoved = { [weak self] in self?.rowDragMoved() }
+        sidebar.onRowDragEnded = { [weak self] in self?.rowDragEnded() }
         panel.onNewSession = { [weak self] in
             guard let self, !sessionKeysBlocked else { return }
             newSession()
@@ -741,13 +754,41 @@ final class PanelController: NSObject {
         pillView.setStatus(urgent, sessionName: multiple ? session.name : nil, selected: session.status, needYou: needYou)
         expandedView.header.setTitle(session.name)
         expandedView.sidebar.isRail = sidebarRail
-        // A panel resized smaller since the drag still leaves the terminal its room.
-        let names = min(sidebarWidth, max(SidebarView.minWidth, expandedView.bounds.width - Self.minTerminalWidth))
-        expandedView.setSidebarWidth(multiple ? (sidebarRail ? SidebarView.railWidth : names) : 0)
+        // While a pill hovers over a panel with one session, the sidebar is only a preview
+        // (`previewSidebar`); its real width comes with the drop.
+        if multiple || dropPreviewCount == 0 {
+            expandedView.setSidebarWidth(multiple ? shownSidebarWidth : 0)
+        }
         expandedView.sidebar.update(sessions.map { each in
             SidebarItem(name: each.name, harness: Harness(command: each.command), status: each.status,
                         label: Self.label(for: each))
-        }, selected: selectedIndex, canClose: canCloseSession)
+        } + Array(repeating: SidebarItem.placeholder(), count: dropPreviewCount),
+           selected: selectedIndex, canClose: canCloseSession,
+           hidden: hiddenRowSession.flatMap { hidden in sessions.firstIndex { $0 === hidden } })
+    }
+
+    /// The sidebar's width when it shows: the rail, or names at `sidebarWidth` (a panel
+    /// resized smaller since the drag still leaves the terminal its room).
+    private var shownSidebarWidth: CGFloat {
+        sidebarRail ? SidebarView.railWidth
+            : min(sidebarWidth, max(SidebarView.minWidth, expandedView.bounds.width - Self.minTerminalWidth))
+    }
+
+    /// Empty slots at the end of the sidebar for sessions about to join: a pill hovering
+    /// over this open panel (DESIGN §7.19). With one session the sidebar slides in for them.
+    private var dropPreviewCount = 0
+
+    func setDropPreview(_ count: Int) {
+        let count = state == .expanded ? count : 0
+        guard count != dropPreviewCount else { return }
+        dropPreviewCount = count
+        if sessions.count == 1 { expandedView.previewSidebar(count > 0 ? shownSidebarWidth : 0) }
+        sessionsChanged()
+    }
+
+    /// Where the first empty slot is on screen (where a dropped pill's content goes).
+    var dropSlotFrame: NSRect {
+        expandedView.sidebar.rowSnapshot(sessions.count).frame
     }
 
     /// waiting > working > done (unseen; seen is idle) > idle.
@@ -865,13 +906,21 @@ final class PanelController: NSObject {
             manager.remove(self)  // ends the agent too
             return
         }
-        closing.onStatusChange = nil
-        closing.onModelChange = nil
-        closing.onViewReplaced = nil
-        closing.terminateChild(reap: true)
-        closing.detach()
-        if autoOpenedSession == closing.id { autoOpenedFor = nil }
-        if pendingAutoOpenSession == closing.id { pendingAutoOpen = nil }
+        release(closing, at: index, ending: true)
+    }
+
+    /// Takes `leaving` out of this pill: its callbacks unhooked, its view detached (and its
+    /// agent ended if `ending`); the next session (or the previous) is selected if it was.
+    /// Never the last one.
+    private func release(_ leaving: TerminalSession, at index: Int, ending: Bool) {
+        leaving.onStatusChange = nil
+        leaving.onModelChange = nil
+        leaving.onViewReplaced = nil
+        if ending { leaving.terminateChild(reap: true) }
+        leaving.detach()
+        if autoOpenedSession == leaving.id { autoOpenedFor = nil }
+        if pendingAutoOpenSession == leaving.id { pendingAutoOpen = nil }
+        if hiddenRowSession === leaving { hiddenRowSession = nil }
         let wasSelected = index == selectedIndex
         sessions.remove(at: index)
         if index < selectedIndex { selectedIndex -= 1 }
@@ -980,6 +1029,128 @@ final class PanelController: NSObject {
         }
     }
 
+    // MARK: - Dragging between pills (DESIGN §7.19)
+
+    /// The session whose row is being dragged.
+    private var draggedSession: TerminalSession?
+
+    /// A row may be dragged with 2+ sessions, not while animating, renaming or asking.
+    private func rowDragBegan(_ index: Int) -> Bool {
+        guard sessions.count > 1, sessions.indices.contains(index), state == .expanded, !isAnimating,
+              expandedView.confirmView == nil, renamingSession == nil else { return false }
+        draggedSession = sessions[index]
+        let snapshot = expandedView.sidebar.rowSnapshot(index)
+        manager.rowDragBegan(sessions[index], from: self, image: snapshot.image, frame: snapshot.frame)
+        return true
+    }
+
+    /// Over the sidebar the row moves to the slot under the mouse; elsewhere its image
+    /// follows the mouse, and a pill under it is highlighted.
+    private func rowDragMoved() {
+        guard let dragged = draggedSession else { return }
+        let slot = expandedView.sidebar.rowSlot(atScreen: DragPointer.location)
+        if let slot { moveSession(dragged, to: slot) }
+        manager.rowDragMoved(from: self, overSidebar: slot != nil, rowFrame: rowScreenFrame(of: dragged))
+    }
+
+    private func rowDragEnded() {
+        guard let dragged = draggedSession else { return }
+        draggedSession = nil
+        let overPanel = NSMouseInRect(DragPointer.location, panel.frame, false)
+        manager.rowDragEnded(dragged, from: self, overPanel: overPanel)
+    }
+
+    /// Reorders the sidebar; the selected session stays selected.
+    private func moveSession(_ moving: TerminalSession, to slot: Int) {
+        guard let from = sessions.firstIndex(where: { $0 === moving }), from != slot,
+              sessions.indices.contains(slot) else { return }
+        let selected = session
+        sessions.remove(at: from)
+        sessions.insert(moving, at: slot)
+        selectedIndex = sessions.firstIndex { $0 === selected } ?? 0
+        appLog("session: moved \"\(moving.name)\" to row \(slot + 1)")
+        sessionsChanged()
+    }
+
+    /// `leaving` goes to another pill: out of this one with its agent still running.
+    func giveAway(_ leaving: TerminalSession) {
+        guard sessions.count > 1, let index = sessions.firstIndex(where: { $0 === leaving }) else { return }
+        release(leaving, at: index, ending: false)
+    }
+
+    /// This pill is dropped onto another: all its sessions leave, running; the manager
+    /// removes the pill right after.
+    func giveAwayAll() -> [TerminalSession] {
+        let leaving = sessions
+        for each in leaving {
+            each.onStatusChange = nil
+            each.onModelChange = nil
+            each.onViewReplaced = nil
+            each.detach()
+        }
+        autoOpenedFor = nil
+        pendingAutoOpen = nil
+        sessions = []
+        return leaving
+    }
+
+    /// Sessions from another pill join the end of the sidebar, still running, with their
+    /// id, name, status and unseen done. The selected session and the position stay.
+    func adopt(_ moved: [TerminalSession]) {
+        dropPreviewCount = 0  // the slots become the rows
+        for each in moved {
+            wire(each)
+            sessions.append(each)
+        }
+        appLog("session: \(moved.count == 1 ? "\"\(moved[0].name)\"" : "\(moved.count) sessions") joined (\(sessions.count) sessions)")
+        sessionsChanged()
+    }
+
+    /// The session whose row is out of the sidebar as a liquid blob (its row is blank).
+    private var hiddenRowSession: TerminalSession?
+
+    func setDraggedRowHidden(_ hidden: TerminalSession?) {
+        guard hidden !== hiddenRowSession else { return }
+        hiddenRowSession = hidden
+        sessionsChanged()
+    }
+
+    /// Where `session`'s row is on screen now.
+    func rowScreenFrame(of shown: TerminalSession) -> NSRect {
+        guard let index = sessions.firstIndex(where: { $0 === shown }) else { return .zero }
+        return expandedView.sidebar.rowSnapshot(index).frame
+    }
+
+    /// The glass's corner radius now (pill or panel), for the liquid overlay's copy of it.
+    var glassRadius: CGFloat { state == .expanded ? Self.expandedCornerRadius : pillCornerRadius }
+
+    /// The glass can be lent (see `GlassBackgroundView.canHideGlass`).
+    var canLendGlass: Bool { glass.canHideGlass }
+
+    /// The liquid overlay draws this pill's glass (and its rim, through its shadow) for a
+    /// while; the content stays here, above it (DESIGN §7.19).
+    func lendGlass() {
+        glass.isGlassHidden = true
+        panel.hasShadow = false
+    }
+
+    /// The pill's content (logo, usage ring, badge, DEV tag) fades while it's dragged onto
+    /// another, so only the target's shows as their glass merges.
+    func setContentAlpha(_ alpha: CGFloat) {
+        glass.contentView.alphaValue = alpha
+    }
+
+    func takeGlassBack() {
+        glass.isGlassHidden = false
+        panel.hasShadow = true
+        panel.refreshShadow()
+    }
+
+    /// The highlight while something dragged is over this (collapsed) pill.
+    func setDropHighlight(_ on: Bool) {
+        pillView.setDropHighlight(on)
+    }
+
     // MARK: - Debug hook (Poppy Dev only, DESIGN §12.2)
 
     /// A stand-in window that takes key status, so a test can have the panel expanded but
@@ -1008,6 +1179,37 @@ final class PanelController: NSObject {
             renameEnded(command.name)
         case "restart": guard valid else { return "no session \(index)" }; sessions[index].restart()
         case "rail": toggleSidebarRail()
+        case "drag":
+            // A scripted mouse drag, step by step (key: rowBegin, rowMove, rowEnd, pillMove,
+            // pillEnd), at x, y; the steps run the same code as the mouse's.
+            let point = NSPoint(x: command.x ?? 0, y: command.y ?? 0)
+            switch command.key {
+            case "rowBegin":
+                guard valid else { return "no session \(index)" }
+                let frame = expandedView.sidebar.rowSnapshot(index).frame
+                DragPointer.scripted = NSPoint(x: frame.midX, y: frame.midY)
+                guard rowDragBegan(index) else { DragPointer.scripted = nil; return "can't drag that row" }
+            case "rowMove":
+                DragPointer.scripted = point
+                rowDragMoved()
+            case "rowEnd":
+                DragPointer.scripted = point
+                rowDragEnded()
+                DragPointer.scripted = nil
+            case "pillMove":
+                DragPointer.scripted = point
+                panel.setFrameOrigin(NSPoint(x: point.x - pillFrame.width / 2, y: point.y - pillFrame.height / 2))
+                pillDragMoved()
+            case "pillEnd":
+                DragPointer.scripted = point
+                pillDragEnded()
+                DragPointer.scripted = nil
+            default: return "unknown drag step"
+            }
+        case "moveRow":
+            guard valid, let target = command.target, sessions.indices.contains(target) else { return "needs index and target" }
+            moveSession(sessions[index], to: target)
+            saveState()
         case "dragSidebar":
             guard let width = command.width else { return "needs width" }
             sidebarDragged(to: CGFloat(width), ended: true)
@@ -1053,6 +1255,7 @@ final class PanelController: NSObject {
     func debugState() -> [String: Any] {
         [
             "state": state == .expanded ? "expanded" : "collapsed",
+            "frame": [Double(panel.frame.minX), Double(panel.frame.minY), Double(panel.frame.width), Double(panel.frame.height)],
             "animating": isAnimating,
             "key": panel.isKeyWindow,
             "settings": settingsShown,
@@ -1192,8 +1395,26 @@ final class PanelController: NSObject {
         expand()
     }
 
-    func pillDragEnded() {
+    /// While the pill is dragged: a pill under the mouse is highlighted, and this one dims
+    /// so the highlight shows through it.
+    func pillDragMoved() {
         guard state == .collapsed, !isAnimating else { return }
+        panel.alphaValue = manager.pillDragMoved(self) ? 0.5 : 1
+    }
+
+    /// The pill drag stopped without a drop (an animation took over).
+    func pillDragCancelled() {
+        panel.alphaValue = 1
+        manager.pillDragCancelled()
+    }
+
+    func pillDragEnded() {
+        panel.alphaValue = 1
+        guard state == .collapsed, !isAnimating else {
+            manager.clearDropHighlight()
+            return
+        }
+        if manager.pillDropped(self) { return }  // merged into the pill under it
         let frame = Self.clamp(panel.frame, in: Self.screen(for: panel.frame))
         panel.setFrame(frame, display: true)
         panel.refreshShadow()
