@@ -2,7 +2,7 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var config = Config()
-    private var controller: PanelController?
+    private var manager: PillManager?
     private var hotKeys: HotKeyManager?
     private var statusItem: NSStatusItem?
     /// Poppy Dev only: scripted tests (DESIGN §12.2).
@@ -15,9 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appLog("\(AppVariant.name) started (pid \(ProcessInfo.processInfo.processIdentifier))")
         config = Config.load()
         LaunchRequest.removeStaleFiles()
-        // Start the requested agent in the requested directory (the last request's, if
-        // several), instead of starting and restarting; both are saved like any change.
-        // Everything else is applied below.
+        // With no saved layout, the first session starts with the requested agent in the
+        // requested directory (the last request's, if several), and the request then reuses
+        // it; both are saved like any change. Everything else is applied below.
         for request in pendingRequests {
             if let command = request.command {
                 config.command = command
@@ -29,16 +29,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         appLog("config: command=\(config.command) cwd=\(config.cwd) hotkey=\(config.hotkey)")
-        let controller = PanelController(config: config)
-        self.controller = controller
+        let manager = PillManager(config: config)
+        self.manager = manager
         let hotKeys = HotKeyManager(spec: config.hotkey) { [weak self] in
-            self?.controller?.hotkeyPressed()
+            self?.manager?.hotkeyPressed()
         }
         self.hotKeys = hotKeys
-        controller.hotKeys = hotKeys
-        statusItem = makeStatusItem(menu: controller.makeMenu())
-        if AppVariant.isDev { debugHook = DebugHook(controller: controller) }
-        for request in pendingRequests { controller.apply(request) }
+        manager.hotKeys = hotKeys
+        statusItem = makeStatusItem(menu: manager.statusMenu)
+        if AppVariant.isDev { debugHook = DebugHook(manager: manager) }
+        for request in pendingRequests { manager.apply(request) }
         pendingRequests = []
     }
 
@@ -59,8 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func received(_ request: LaunchRequest) {
         appLog("open request: \(request.directory ?? "-")\(request.command.map { ", agent \($0)" } ?? "")")
-        if let controller {
-            controller.apply(request)
+        if let manager {
+            manager.apply(request)
         } else {
             pendingRequests.append(request)
         }
@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         appLog("Poppy terminating")
-        controller?.terminateAll()
+        manager?.terminateAll()
     }
 
     /// Menu bar icon that opens Poppy's menu (DESIGN §7.12).

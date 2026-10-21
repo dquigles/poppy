@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Scripted tests for sessions and the sidebar (M24), run against Poppy Dev.
+Acts on the most recent pill; scripts/test-pills.py covers several pills (M25).
 
 Drives Poppy Dev through its debug hook (DESIGN §12.2): writes debug-cmd-<id>.json into
 ~/.config/poppy-dev/run/ and reads back debug-state-<id>.json. Agent reports are faked by
@@ -493,14 +494,13 @@ def exited_agent_keeps_row():
 
 @test
 def back_to_one_session():
-    """closing down to one session hides the sidebar and the badge; ⌘W then does nothing"""
+    """closing down to one session hides the sidebar and the badge"""
     close_extra_sessions()
     s = state()
     check("one left, the first", len(s["sessions"]) == 1 and s["sessions"][0]["id"] == first_id, summary(s))
     check("sidebar hidden", s["sidebarWidth"] == 0, summary(s))
     check("label as before", " — " not in s["pill"]["label"], s["pill"]["label"])
-    s = cmd("cmdW")
-    check("last session stays", len(s["sessions"]) == 1)
+    # (Closing the last session now removes the pill, M25: scripts/test-pills.py.)
 
 
 # --- teardown ----------------------------------------------------------------------------

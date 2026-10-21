@@ -7,7 +7,8 @@ A small glass pill sits in a corner of your screen, on top of everything and on 
 - **Agent status on the pill:** blue while the agent works, orange when it needs your input, green when it's done. It can also open by itself when the agent needs you.
 - **Usage meters** for Claude, Codex and Antigravity: a ring around the pill (the 5-hour limit, or for Antigravity the weekly limit of the model group in use), and % left with reset times in the panel.
 - **Images and files:** paste a screenshot with ⌘V, or drag files and images onto the terminal or the pill, and the agent gets their paths.
-- **A `poppy` command:** `poppy ~/code/myproject` opens the agent in that folder.
+- **Several agents at once:** sessions in one pill's sidebar (⌘T), and as many pills as you like.
+- **A `poppy` command:** `poppy ~/code/myproject` opens the session in that folder, or starts one there.
 
 ## Requirements
 
@@ -44,6 +45,8 @@ To start Poppy at login, add it in **System Settings → General → Login Items
 - **Click the pill**, or press **⌃⌥Space**, to open the panel. Click outside it, or press the hotkey again, to fold it back.
 - **Drag the pill** to any corner or edge. The panel opens from the corner it's closest to.
 - **Resize** the open panel by dragging its edges.
+- **Sessions:** ⌘T (or ＋ in the sidebar) starts another agent in the same pill; ⌘1–9 switch, ⌘W closes. With two or more, a sidebar lists them.
+- **Pills:** New Pill in the menu gives you another pill, with its own sessions and place on screen. Only one is open at a time. The settings page's "Hotkey opens" picks which one the hotkey opens: the one you used last, the one that needs you most, or each in turn. Closing a pill's last session removes it. Poppy remembers your pills and sessions and starts them fresh next time.
 - **Right-click the pill** (or use Poppy's menu bar icon) for everything else:
   - switch agent, change working folder, restart the agent
   - Auto-Open (open when the agent needs input and/or is done)
@@ -54,11 +57,15 @@ To start Poppy at login, add it in **System Settings → General → Login Items
 ```text
 poppy [options] [directory]
 
-Opens Poppy with the agent in <directory> (default: the current directory).
-Options are saved, like changing them in Poppy's menu.
+Opens Poppy on a session in <directory> (default: the current directory): the
+one already there if there is one (never restarting it), else a new session in
+the most recent pill. Options are saved, like changing them in Poppy's menu.
 
   -a, --agent NAME        claude, codex, agy, opencode, or an agent name from config.json
   -c, --command CMD       run CMD (any shell command) as the agent
+                          (with -a or -c, only a session running that agent is reused)
+      --new               always a new session, in the most recent pill
+      --new-pill          always a new pill
       --pill SIZE         small, medium or large
       --auto-open WHEN    input, done, both or off
       --focus             Auto-Open takes the keyboard
@@ -123,6 +130,8 @@ swift build                   # debug build
 ./scripts/dev.sh              # build Poppy Dev and (re)start it; log in build/poppy-dev.log
 ./scripts/bundle.sh           # only build "build/Poppy Dev.app"
 "build/Poppy Dev.app/Contents/MacOS/poppy-dev"   # run it, with logs on stderr
+./scripts/test-sessions.py    # scripted tests against Poppy Dev: sessions (M24)
+./scripts/test-pills.py       # and several pills (M25; restarts Poppy Dev)
 ./scripts/bundle.sh --release # build build/Poppy.app (what install.sh installs)
 ```
 

@@ -10,11 +10,15 @@ nonisolated enum CommandLineClient {
     static let usage = """
     Usage: poppy [options] [directory]
 
-    Opens Poppy with the agent in <directory> (default: the current directory).
-    Options are saved, like changing them in Poppy's menu.
+    Opens Poppy on a session in <directory> (default: the current directory): the
+    one already there if there is one (never restarting it), else a new session in
+    the most recent pill. Options are saved, like changing them in Poppy's menu.
 
       -a, --agent NAME        claude, codex, agy, opencode, or an agent name from config.json
       -c, --command CMD       run CMD (any shell command) as the agent
+                              (with -a or -c, only a session running that agent is reused)
+          --new               always a new session, in the most recent pill
+          --new-pill          always a new pill
           --pill SIZE         small, medium or large
           --auto-open WHEN    input, done, both or off
           --focus             Auto-Open takes the keyboard
@@ -141,6 +145,8 @@ nonisolated enum CommandLineClient {
             case "--usage": request.showUsage = true
             case "--no-usage": request.showUsage = false
             case "-b", "--background": request.show = false
+            case "--new": request.new = true
+            case "--new-pill": request.newPill = true
             default:
                 if argument.hasPrefix("-"), argument != "-" {
                     return .failure("unknown option '\(argument)'")

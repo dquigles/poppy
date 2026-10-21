@@ -1,6 +1,8 @@
 import Foundation
 
-/// Fetches the running agent's usage and decides when (DESIGN §9.7).
+/// Fetches the running agent's usage and decides when (DESIGN §9.7). One per pill, for
+/// its selected session's agent; the reports and fetch timing are shared app-wide, so two
+/// pills on the same account never fetch twice.
 final class UsageMonitor {
     enum Trigger { case poll, event }
 
@@ -21,7 +23,9 @@ final class UsageMonitor {
 
     /// Keyed by harness and executable prefix, so two Codex profiles with different
     /// `CODEX_HOME`s don't share an account's numbers.
-    private var sources: [String: Source] = [:]
+    private static var sources: [String: Source] = [:]
+    /// Every pill's monitor, so a fetch's result shows wherever that account is shown.
+    private static let monitors = NSHashTable<UsageMonitor>.weakObjects()
     private var sourceKey: String { Self.sourceKey(harness, command) }
 
     private static func sourceKey(_ harness: Harness, _ command: String) -> String {
@@ -45,6 +49,7 @@ final class UsageMonitor {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        Self.monitors.add(self)
     }
 
     isolated deinit {
@@ -82,8 +87,8 @@ final class UsageMonitor {
         self.enabled = enabled
         if enabled {
             // Turning it back on retries a silent agy (DESIGN §9.12).
-            for key in sources.keys where sources[key]?.nextAllowed == .distantFuture {
-                sources[key]?.nextAllowed = .distantPast
+            for key in Self.sources.keys where Self.sources[key]?.nextAllowed == .distantFuture {
+                Self.sources[key]?.nextAllowed = .distantPast
             }
         }
         publish()
@@ -102,15 +107,15 @@ final class UsageMonitor {
         let harness = Harness(command: command)
         guard enabled, Self.supports(harness) else { return }
         let key = Self.sourceKey(harness, command)
-        var source = sources[key] ?? Source()
+        var source = Self.sources[key] ?? Source()
         let now = Date()
         guard !source.inFlight, now >= source.nextAllowed else { return }
         if trigger == .poll, let report = source.report, !report.isStale(at: now),
            now.timeIntervalSince(report.fetchedAt) < Self.pollInterval { return }
         source.inFlight = true
-        sources[key] = source
+        Self.sources[key] = source
 
-        Task { [weak self] in
+        Task {
             // Every source runs its CLI and blocks, so never on the main actor.
             let result = await Task.detached { () -> Result<UsageReport, Error> in
                 do {
@@ -122,11 +127,12 @@ final class UsageMonitor {
                     }
                 } catch { return .failure(error) }
             }.value
-            self?.finished(key, harness, result)
+            Self.finished(key, harness, result)
         }
     }
 
-    private func finished(_ key: String, _ harness: Harness, _ result: Result<UsageReport, Error>) {
+    /// Not tied to the monitor that asked: its pill may have closed meanwhile.
+    private static func finished(_ key: String, _ harness: Harness, _ result: Result<UsageReport, Error>) {
         var source = sources[key] ?? Source()
         source.inFlight = false
         let now = Date()
@@ -140,17 +146,17 @@ final class UsageMonitor {
             if case UsageError.signedOut = error {
                 source.nextAllowed = now.addingTimeInterval(60)  // cheap check, no prompt: a sign-in shows soon
             } else if case UsageError.unavailable = error {
-                source.nextAllowed = now.addingTimeInterval(Self.unavailableRetry)  // e.g. an API-key login
+                source.nextAllowed = now.addingTimeInterval(unavailableRetry)  // e.g. an API-key login
             } else if case UsageError.noAnswer = error {
                 source.nextAllowed = .distantFuture  // an expired agy login could open the browser again
             } else {
-                source.nextAllowed = now.addingTimeInterval(Self.failureRetry)
+                source.nextAllowed = now.addingTimeInterval(failureRetry)
             }
             source.failure = "\(error)"
             appLog("usage: \(harness.displayName) failed: \(error)")
         }
         sources[key] = source
-        if key == sourceKey { publish() }
+        for monitor in monitors.allObjects where monitor.sourceKey == key { monitor.publish() }
     }
 
     private func publish() {
@@ -158,7 +164,7 @@ final class UsageMonitor {
             onChange?(nil, nil)
             return
         }
-        let source = sources[sourceKey]
+        let source = Self.sources[sourceKey]
         if var report = source?.report?.current() {
             report.ring = report.ringWindow(forModel: agentModel)
             onChange?(report, nil)

@@ -16,15 +16,19 @@ final class DebugHook {
         var key: String?
         var value: Bool?
         var width: Double?
+        /// The pill an op acts on (default: the most recent), DESIGN §12.2.
+        var pill: Int?
+        var new: Bool?
+        var newPill: Bool?
     }
 
     static let commandPrefix = "debug-cmd-"
     static let statePrefix = "debug-state-"
-    private weak var controller: PanelController?
+    private weak var manager: PillManager?
     private var timer: Timer?
 
-    init(controller: PanelController) {
-        self.controller = controller
+    init(manager: PillManager) {
+        self.manager = manager
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -49,13 +53,14 @@ final class DebugHook {
                 continue
             }
             if command.op != "state" { appLog("debug hook: \(command.op)\(command.index.map { " \($0)" } ?? "")") }
-            let error = controller?.debugRun(command)
-            answer(command.id, error: error)
+            let error = manager?.debugRun(command)
+            answer(command, error: error)
         }
     }
 
-    private func answer(_ id: String, error: String?) {
-        var state = controller?.debugState() ?? [:]
+    private func answer(_ command: Command, error: String?) {
+        let id = command.id
+        var state = manager?.debugState(for: command) ?? [:]
         state["id"] = id
         if let error { state["error"] = error }
         let url = LaunchRequest.directoryURL.appendingPathComponent("\(Self.statePrefix)\(id).json")

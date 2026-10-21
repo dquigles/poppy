@@ -13,6 +13,10 @@ nonisolated struct LaunchRequest: Codable, Sendable, Equatable {
     var showUsage: Bool?
     /// Expand (and focus) the panel afterward.
     var show = true
+    /// Always a new session in the most recent pill (`--new`), or in a new pill
+    /// (`--new-pill`), instead of reusing one already in the folder (DESIGN §9.9).
+    var new: Bool?
+    var newPill: Bool?
 
     /// Request files live next to the status files; only this user can write there.
     static let directoryURL = ConfigPaths.directory.appendingPathComponent("run")

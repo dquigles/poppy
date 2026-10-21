@@ -37,7 +37,8 @@ Sources/poppy/
   Log.swift                         appLog()
   App/AppDelegate.swift             creates and owns everything; quit/cleanup
   App/AppVariant.swift              Poppy or Poppy Dev (§12.1)
-  App/DebugHook.swift               Poppy Dev only: scripted control and state for scripts/test-sessions.py (§12.2)
+  App/PillManager.swift             the pills: most recent, one open at a time, hotkey target, `poppy` routing, menu bar menu, shared settings, layout (§7.18)
+  App/DebugHook.swift               Poppy Dev only: scripted control and state for scripts/test-*.py (§12.2)
   Config/Config.swift               Config (config.json) + PanelState (state.json) load/save
   Window/GlassPanel.swift           NSPanel subclass
   Window/PanelController.swift      state machine, frames, animation, observers, Poppy menu (§7.10)
@@ -64,18 +65,20 @@ Resources/Logos/*.png               harness + Poppy logos, black on transparent 
 scripts/render-logos.swift          renders Resources/Logos/src/*.svg to the PNGs
 scripts/bundle.sh                   builds build/Poppy.app
 scripts/test-sessions.py            scripted session tests against Poppy Dev (§12.2)
+scripts/test-pills.py               scripted tests for several pills; restarts Poppy Dev (§12.2)
 docs/DESIGN.md, docs/PROGRESS.md
 ```
 
 Ownership: strong references go downward; back-references are `weak`.
-- `AppDelegate` owns `config: Config`, `controller: PanelController` (which owns the sessions since M24; M5–M23 `AppDelegate` owned the one `session: TerminalSession`), `hotKeys: HotKeyManager` (from M10; M6–M9 held a `GlobalHotKey` directly), and `statusItem: NSStatusItem` (from M8; the item is removed from the menu bar when deallocated, so it must be retained).
+- `AppDelegate` owns `config: Config` (the launch copy), `manager: PillManager` (M25; it owns the `[PanelController]`, one per pill, in creation order; M4–M24 `AppDelegate` owned the one `controller`, and M5–M23 the one `session: TerminalSession`), `hotKeys: HotKeyManager` (from M10; M6–M9 held a `GlobalHotKey` directly), and `statusItem: NSStatusItem` (from M8; the item is removed from the menu bar when deallocated, so it must be retained).
 - `PanelController` is `final class PanelController: NSObject`; menu actions are `@objc` methods.
-- `PanelController.init(config:)` (M24; `init(config:session:)` M4–M23; M2–M3 use a temporary `init()` with no arguments and a hard-coded title `claude`):
+- `PanelController.init(manager:saved:frame:)` (M25; `init(config:)` M24, `init(config:session:)` M4–M23; M2–M3 use a temporary `init()` with no arguments and a hard-coded title `claude`):
+  - It has an `unowned let manager: PillManager`; `config`, `recentDirectories`, `pillDiameter`, `agents` and `hotKeys` are the manager's (computed properties), so every pill shares them.
   - It creates and owns the `GlassPanel`, `GlassBackgroundView`, `PillView` and `ExpandedView`.
-  - It creates the first session from `config.command`/`cwd` (`makeSession`) and attaches it to `expandedView.contentHost`, which starts its agent. It owns `sessions: [TerminalSession]` (never empty) and `selectedIndex` (§7.17).
+  - It creates one session per `SavedPill.sessions` entry (`makeSession`), starts every agent (the non-selected ones attached and detached at once) and keeps the selected one in `expandedView.contentHost`. It owns `sessions: [TerminalSession]` (never empty; the last one closing removes the pill) and `selectedIndex` (§7.17).
   - (Before M5 there was no session and a placeholder text field stood in for the terminal; it was removed in M24.)
 - `PillView` and `HeaderView` have a `weak var controller: PanelController?`. On right-click they call `controller.showContextMenu(event:in:)`.
-- `PanelController` owns the `AgentCatalog` (M12, §9.5) and the `UsageMonitor` (M15, §9.7).
+- `PillManager` owns the `AgentCatalog` (M12, §9.5; per pill until M24). Each `PanelController` owns a `UsageMonitor` (M15, §9.7), whose cache is app-wide since M25.
 - `TerminalSession` owns the current `PoppyTerminalView` and keeps its own `config` copy (M12).
   - It exposes `var focusView: NSView?`, which is the current terminal view. `PanelController` reads it whenever it needs a first responder.
   - `focusTarget` is the close question if one shows, else the settings page if it shows, else the selected session's terminal.
@@ -100,13 +103,13 @@ Files are introduced in the milestone that needs them (§13).
 - `applicationDidFinishLaunching`:
   1. `appLog("Poppy started (pid N)")`.
   2. Load the config (§8.1). Delete stale request files (`LaunchRequest.removeStaleFiles()`, M16). If requests from the `poppy` command arrived during launch (`pendingRequests`, §9.9), take `command` and `cwd` from them (the last one wins) and save both, so the agent starts there once.
-  3. Create the controller (it creates the first session, §3). It shows the pill with `orderFrontRegardless()`.
-  4. Poppy Dev only: start the debug hook (§12.2).
-  5. Create the `HotKeyManager` (M10+; §11), which registers the hotkey, and set `controller.hotKeys`.
-  6. Create the menu bar item (M8+, §7.12).
-  7. Apply the pending requests in order (`controller.apply`, M16, §9.9), then clear them.
+  3. Create the `PillManager` (M25), which restores the saved pills (§8.2) or one pill from `config.command`/`cwd`; each shows itself with `orderFrontRegardless()`. (With a saved layout, step 2's `command`/`cwd` are only the defaults for new sessions.)
+  4. Create the `HotKeyManager` (M10+; §11), which registers the hotkey, and set `manager.hotKeys`.
+  5. Create the menu bar item (M8+, §7.12) with `manager.statusMenu`.
+  6. Poppy Dev only: start the debug hook (§12.2).
+  7. Apply the pending requests in order (`manager.apply`, M16, §9.9), then clear them.
 - `NSApp.activate` and `NSRunningApplication.activate` are **never** called, with one exception: Choose Folder… (M16, §9.8) activates Poppy while the folder picker is open and then gives activation back to the previous app.
-- `applicationWillTerminate`: `controller.terminateAll()`, every session's `terminateChild()` (§9.4).
+- `applicationWillTerminate`: `manager.terminateAll()`: saves the layout, then every session's `terminateChild()` in every pill (§9.4).
 - Quitting: the Poppy menu's Quit (context menu or menu bar item, §7.10) calls `NSApp.terminate(nil)`. Under `swift run`, Ctrl-C in the launching shell also quits (default SIGINT; no handler).
 
 ### Logging
@@ -114,7 +117,7 @@ Files are introduced in the milestone that needs them (§13).
 
 ## 5. The panel (`GlassPanel: NSPanel`)
 
-There is one Poppy panel for the app's whole lifetime. It is never closed, only resized. (M10–M21 the hotkey recorder was a separate, short-lived `GlassPanel`; since M22 it's a field on the settings page, §11.2.)
+Each pill is one Poppy panel (M25, §7.18; before that there was one for the app's whole lifetime). It is never closed, only resized, until its last session closes, when it's ordered out and dropped. (M10–M21 the hotkey recorder was a separate, short-lived `GlassPanel`; since M22 it's a field on the settings page, §11.2.)
 
 ```swift
 super.init(contentRect: rect,
@@ -237,7 +240,7 @@ Screens are compared by `deviceDescription[NSDeviceDescriptionKey("NSScreenNumbe
 `screenWithMouse()` = the first screen where `NSMouseInRect(NSEvent.mouseLocation, screen.frame, false)`, else `NSScreen.main`.
 
 ### 7.3 Default position
-Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − pillWidth, minY + 16)`, with `pillWidth` the current diameter (§7.14). At launch the screen is `NSScreen.main`.
+Bottom-right of a screen's `visibleFrame`: pill origin = `(maxX − 16 − pillWidth, minY + 16)`, with `pillWidth` the current diameter (§7.14). At launch the screen is `NSScreen.main`. A new pill (M25, `PillManager.freeFrame`) starts there and steps left by diameter + 12 pt while it would overlap another pill's `pillFrame` (grown by 6 pt), then up a row from the right; if the screen is full it overlaps at the default position.
 
 ### 7.4 Clamping
 `clamp(frame, in screen)` shifts the frame so it lies inside `visibleFrame.insetBy(dx: 8, dy: 8)`. Frames are never shrunk: if a frame is larger than that area, it is aligned to the area's top-left corner (`minX`, `maxY`) and allowed to overflow. This is decided **per axis**: an axis that fits is shifted normally; an axis that overflows is aligned (x to `minX`, y so that `maxY` matches). The `ExpandedView` (§7.7) is therefore never clipped by clamping. (Only the expand-time fit, §7.13, ever shrinks it, before clamping.) It is applied:
@@ -337,10 +340,11 @@ In `PillView`, ignored while `isAnimating`:
   - Its frame is `ExpandedView` bounds minus the header, inset 8 pt on the left (or starting at the sidebar's right edge while it shows, §7.17), right and bottom (above the usage footer when it's shown). The gap below the header is 0. `ExpandedView.layoutContent()` sets it, the settings page, the sidebar and the close question together when the footer or the sidebar width changes.
   - `wantsLayer = true`, `layer.cornerRadius = 10`, `layer.masksToBounds = true`, no background color.
   - Until M5 it holds the placeholder: an editable `NSTextField` filling its width at the top, with placeholder text "Type here to test focus".
-- **`SettingsView`** (M22, `Views/SettingsView.swift`): the settings page, a sibling over `contentHost` with the same frame (kept in step by `setUsageVisible`), hidden unless shown. While it shows, the **header** (`HeaderView.setShowsSettings(true)`) reads "Settings" (styled like the directory name, no tooltip) in place of the directory name, with a small Done push button 10 pt from its right edge (`hitTest` gives Done its own clicks; the rest of the header still drags). A directory change meanwhile updates the saved title, shown when the page closes. The page is an `NSScrollView` (no background, scroller only when needed) laid out like System Settings: a vertical stack, 12 pt from the top, 20 pt from the sides, at most 620 pt wide and centered, of rounded **cards** (`SettingsCard`: 10 pt continuous corners, `labelColor` at 5 % fill and a 0.5 pt 6 % border, resolved per appearance in `updateLayer`) 20 pt apart, each preceded (except the first) by a **section header** (13 pt bold `labelColor`, optional 11 pt description, 8 pt above its card). Each **row** is at least 38 pt high: the title (13 pt `labelColor`; `tertiaryLabelColor` while its control is disabled) with an optional description under it (`SettingsLabel`, 11 pt secondary, wrapping at its laid-out width) 10 pt from the left, the control 10 pt from the right, both vertically centered; inset hairlines (`NSBox` separators, 10 pt in from each side) between rows. Cards, top to bottom: (no header) Agent, Working directory, Hotkey; **Pill**: Pill size, Usage meters, Agent status; **Auto-Open** (description "Opens the panel by itself when the agent needs you.", or "Needs Agent status, above."): When the agent needs input, When the agent is done, Take keyboard focus; **Advanced**: Custom agents and other options. Controls:
+- **`SettingsView`** (M22, `Views/SettingsView.swift`): the settings page, a sibling over `contentHost` with the same frame (kept in step by `setUsageVisible`), hidden unless shown. While it shows, the **header** (`HeaderView.setShowsSettings(true)`) reads "Settings" (styled like the directory name, no tooltip) in place of the directory name, with a small Done push button 10 pt from its right edge (`hitTest` gives Done its own clicks; the rest of the header still drags). A directory change meanwhile updates the saved title, shown when the page closes. The page is an `NSScrollView` (no background, scroller only when needed) laid out like System Settings: a vertical stack, 12 pt from the top, 20 pt from the sides, at most 620 pt wide and centered, of rounded **cards** (`SettingsCard`: 10 pt continuous corners, `labelColor` at 5 % fill and a 0.5 pt 6 % border, resolved per appearance in `updateLayer`) 20 pt apart, each preceded (except the first) by a **section header** (13 pt bold `labelColor`, optional 11 pt description, 8 pt above its card). Each **row** is at least 38 pt high: the title (13 pt `labelColor`; `tertiaryLabelColor` while its control is disabled) with an optional description under it (`SettingsLabel`, 11 pt secondary, wrapping at its laid-out width) 10 pt from the left, the control 10 pt from the right, both vertically centered; inset hairlines (`NSBox` separators, 10 pt in from each side) between rows. Cards, top to bottom: (no header) Agent, Working directory, Hotkey, Hotkey opens (M25); **Pill**: Pill size, Usage meters, Agent status; **Auto-Open** (description "Opens the panel by itself when the agent needs you.", or "Needs Agent status, above."): When the agent needs input, When the agent is done, Take keyboard focus; **Advanced**: Custom agents and other options. Controls:
   - **Agent:** a pop-up button (the profiles of the Agent menu, §9.5, with 16 pt logos; "(not installed)" ones disabled unless current); note "Changing it restarts the agent." → `switchAgent(to:)`.
   - **Working directory:** a pop-up button (the current folder, then recents, with folder icons, full path as tooltip; a separator; "Choose Folder…"); same note. A recent → `openDirectory(_, show: false)`; Choose Folder… → `pickFolder(show: false)` (§9.8), after which the page takes the keyboard back (`refocusSettings()`). The pop-up shows the current folder again at once; the change lands through `apply`.
   - **Hotkey:** `HotkeyField`, an inline shortcut field (§11.2), with its hint or error as the row description.
+  - **Hotkey opens** (M25): a pop-up, Most recent pill / Most urgent first / Each pill in turn (§11), note "Which pill, when there are several." → `manager.setHotkeyTarget`.
   - **Pill size:** radio buttons in a row, Small / Medium / Large (§7.14).
   - **Usage meters:** a small `NSSwitch`; note "Limits left and reset times in the footer and around the pill."
   - **Agent status:** a small `NSSwitch` for `config.statusHooks` (§9.6); note that it applies the next time the agent starts (`TerminalSession.setStatusHooks(_:)` changes its config copy; `restart()` recomputes the spec).
@@ -358,7 +362,7 @@ In `PillView`, ignored while `isAnimating`:
 ### 7.10 Poppy menu (context menu and menu bar)
 `PanelController.makeMenu() -> NSMenu` is the single source of Poppy's menu, used by both the right-click context menu and the menu bar item (§7.12), so future settings appear in both places:
 - It builds a new `NSMenu` with `autoenablesItems = false` and `delegate = self` (the controller, an `NSMenuDelegate`), and fills it via `populateMenu(_:)`, which removes all items and adds, in order (separators between the groups), each action item with explicit `target = self`:
-  - **"New Session"** (⌘T hint), **"Rename Session…"**, **"Close Session"** (⌘W hint; disabled with one session) (M24, §7.17). All disabled while animating.
+  - **"New Session"** (⌘T hint), **"New Pill"** (M25, `manager.newPillItem()`, §7.18), **"Rename Session…"**, **"Close Session"** (⌘W hint; M24 disabled it with one session; since M25 closing the last session removes the pill) (M24, §7.17). All disabled while animating.
   - separator
   - **"Agent ▸"** (M12): a submenu built by `makeAgentMenu()` (§9.5), for the selected session.
   - **"Working Directory ▸"** (M16): a submenu built by `makeDirectoryMenu()` (§9.8), for the selected session.
@@ -369,7 +373,8 @@ In `PillView`, ignored while `isAnimating`:
   - separator
   - **"Quit Poppy":** action `quit` calls `NSApp.terminate(nil)`.
 - `menuNeedsUpdate(_:)` calls `populateMenu(_:)` again, so the long-lived menu bar copy is rebuilt each time it opens and never shows stale state.
-- `PanelController.showContextMenu(event:in:)` shows `makeMenu()` with `NSMenu.popUpContextMenu(menu, with: event, for: view)`.
+- `PanelController.showContextMenu(event:in:)` makes its pill the most recent (§7.18), then shows `makeMenu()` with `NSMenu.popUpContextMenu(menu, with: event, for: view)`. The menu acts on the pill it was opened from.
+- `populateMenu(_:clear:)`: `clear: false` appends, for the menu bar menu (§7.12).
 
 ### 7.11 Pill contents (the harness logo, M11)
 - `pillTitle` = `lastPathComponent` of the first whitespace-separated word of `config.command` (for example, `/usr/local/bin/claude --x` becomes `claude`). From M11 it is used only by the expanded header's title (§7.9).
@@ -395,7 +400,10 @@ In `PillView`, ignored while `isAnimating`:
 - `AppDelegate` creates it after the controller: `NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`.
 - `button.image` = `HarnessLogo.menuBar(points: 18)` (M11; the round-petal mark since M16; §7.11): Poppy's own logo, whatever the harness, so the menu bar item is always recognizably Poppy. It's a template, so it adapts to light and dark menu bars. `button.toolTip = "Poppy"`. It never shows agent status (only the pill does, §7.15).
 - If the image has zero size, `button.title = "P"` and a log line, so the item is never invisible.
-- `statusItem.menu = controller.makeMenu()` (repopulated on each open, §7.10). Clicking the icon shows the menu; no custom click handling.
+- `statusItem.menu = manager.statusMenu` (M25; `controller.makeMenu()` before), delegate the manager, repopulated on each open (`populateStatusMenu`). Clicking the icon shows the menu; no custom click handling. Contents:
+  - With 2+ pills: a "Pills" section header, then one item per pill in creation order (`menuTitle`: the selected session's name, the pill's most urgent status suffix, and " · N sessions" with 2+; `menuImage`: the selected agent's 16 pt logo; checked for the most recent pill); picking one calls `open()` on it. Then a separator.
+  - Then the most recent pill's own menu (§7.10), acting on that pill.
+  - With no pill: New Pill, New Session (both make a new pill), Quit.
 - `appLog("status item created")`.
 - The accessory policy is unchanged: no Dock icon, and opening the menu does not activate Poppy.
 
@@ -413,17 +421,17 @@ In `PillView`, ignored while `isAnimating`:
 - `collapse()` does nothing while `panel.inLiveResize`.
 
 ### 7.14 Pill size presets (M13)
-- `PanelController.pillPresets`: Small 36, Medium 44 (default), Large 56 pt. `pillDiameter` is loaded from `state.json` if it's one of these, else 44. `pillSize` and `pillCornerRadius` (diameter / 2) are computed from it.
+- `PanelController.pillPresets`: Small 36, Medium 44 (default), Large 56 pt. `pillDiameter` is global (M25: `PillManager.pillDiameter`, every pill the same size), loaded from `state.json` if it's one of these, else 44. `pillSize` and `pillCornerRadius` (diameter / 2) are computed from it.
 - **Logo size:** `PillView.logoSize(forDiameter:)` = `round(diameter × 24 / 44)` (20, 24, 31); `PillView.setDiameter(_:)` updates the logo's width and height constraints. The logo image itself is always requested at 24 pt and scaled by the image view.
-- **Settings page:** "Pill size" (§7.9) shows the presets as radio buttons; a choice calls `setPillDiameter(_:)`:
-  - Ignored if unchanged or animating. Sets `pillDiameter` and the logo size.
+- **Settings page:** "Pill size" (§7.9) shows the presets as radio buttons; a choice calls `setPillDiameter(_:)`, i.e. `manager.setPillDiameter`, which calls every pill's `pillDiameterChanged()` and saves the layout once:
+  - Ignored if unchanged or any pill is animating. Each pill sets the logo size.
   - Collapsed: the new frame keeps the corner nearest the screen corner (`anchor(for: pillFrame)`, §7.5), is clamped, and applied; `glass.cornerRadius = pillCornerRadius`; `refreshShadow()`; `pillFrame` = it.
   - Expanded: nothing moves; the next collapse uses the new size (`pillFrame(fromExpanded:)` and the collapse completion's corner radius).
-  - Save state.
 
 ### 7.15 Auto-open (M14)
 Driven by status changes (§9.6), in `PanelController.statusChanged(_:_:)` (the session and its new status, M24), which also calls `sessionsChanged()` (pill tint, badge, rows; `PillView.setStatus` (logo tint, plus " (working)" / " (needs input)" / " (done)" in the tooltip and accessibility label, so status isn't conveyed by color alone). Only the pill shows status: the menu bar icon never changes color (the user's choice in M14).
 - **Several sessions** (M24): each rule below is about the session that reported (the *opener*). `autoOpenedFor` is paired with `autoOpenedSession` and `pendingAutoOpen` with `pendingAutoOpenSession` (session ids). The user is **busy** when the panel is expanded and key on another session, or while the close question shows: then the auto-open is skipped (logged `auto-open: skipped (busy in another session)`), and only the row tint, pill color and badge change. Otherwise the opener is selected first (logged `…, selecting <name>`), then the usual open: collapsed → expand on it; expanded but not key → focus (or not) as below, now on it. `done` is marked seen only if the opener is the selected session and the panel is key. A turn ending (`done`) refreshes usage for the opener's agent (§9.7).
+- **Several pills** (M25): the user is also busy when **another pill's** panel is expanded and key (logged `auto-open: skipped (busy in another pill)`). Otherwise the usual open: a collapsed pill expands, which folds any other open (not key) pill (§7.18). The wait for animations checks every pill (`manager.isAnimating`), and every pill's pending auto-open is retried when any pill finishes animating (`manager.animationFinished()`, from `finishAnimation()`).
 - **Arming:** a `.waiting` auto-open collapses only on the **first** status after it, from the opener, and only if that is `working` (the user answered) and the opener is still the selected session. Any other status (e.g. a denied prompt ending the turn with `done`) clears `autoOpenedFor`, so a later prompt never collapses the panel. Any status other than the pending one also clears `pendingAutoOpen`.
 - **working:** if that first status after a waiting open, expanded and not animating, `collapse()`: focus goes back to the app underneath (like claude-popup's detach hook). Not after a `.done` auto-open, where the user is typing the next prompt in the panel.
 - **waiting:** if `config.autoOpenOnInput`, `autoOpen(for: .waiting)`.
@@ -502,7 +510,7 @@ The panel is already hidden by the system, so nothing visible changes. The point
 **Verification (the user, by eye):** swipe slowly and fast between a fullscreen app and the desktop, and snap a swipe back, with the pill collapsed and with the panel expanded (key and not key): each time the panel reappears with the fade and scale (a fast swipe may reappear without it), never flashes at full opacity first, never stays invisible, and the glass renders correctly while scaling (if not: fade-only, i.e. drop step 4). Swipe again right after the panel reappears (re-arm mid-reveal). Press the hotkey mid-swipe: the panel expands and its rim comes back. Expanded and not key: it reappears with no user action (must pass). The glass looks right while fading, too (fallback: no fade; `glass.alphaValue = 1` without animation at the start of the reveal, scale only). Expanded and key: the window outline has no square hairline or other glitch while `hasShadow` is off (fallback: keep the shadow on while expanded, or fade only). Expand/collapse, the hotkey and drags must look and behave exactly as before (no `reveal:` log lines from them). With Reduce Motion on, it only fades.
 
 ### 7.17 Sessions and the sidebar (M24)
-One pill holds one or more **sessions**: each an agent with its own terminal view, command, working directory, status and name. The plan for several pills and dragging between them (M25–M26) is `docs/MULTI-SESSION.md`. A pill with one session looks and behaves as before M24, apart from the new menu items and shortcuts.
+One pill holds one or more **sessions**: each an agent with its own terminal view, command, working directory, status and name. Several pills are §7.18 (M25); the plan for dragging between them (M26) is `docs/MULTI-SESSION.md`. A pill with one session looks and behaves as before M24, apart from the new menu items and shortcuts.
 
 **`TerminalSession`** (§9.1) gains `id: UUID`, `customName: String?`, `defaultName` and `name` (`customName ?? defaultName`), `command`, `workingDirectory` (the launch spec's directory, normalized, §9.8), `attach(to:)` / `detach()` and `isShown`. `attach` starts the agent the first time; after that it puts the existing view back into the host, sized to `host.bounds` (one SIGWINCH if the size changed meanwhile). `detach` removes the view from its host, and the agent keeps running with its output still going into the view's buffer. A restart while detached creates the new view without adding it (`attached` is false). The status callbacks capture the session weakly, so they're rewired per session (`makeSession`).
 
@@ -513,7 +521,7 @@ One pill holds one or more **sessions**: each an agent with its own terminal vie
 - **Select** (`select(_:)`, a row click, ⌘1–9, an auto-open): cancels a close question, detaches the old view, attaches the new one, then `selectionChanged()`: the pill logo and label, the header path, `usage.setCommand` / `setAgentModel` (§9.7), the settings page if it shows, and `sessionsChanged()`. It scrolls the row into view, gives the terminal the first responder if expanded (not under the settings page or a question), and marks done seen if the panel is key. A row click also closes the settings page. Logs `session: selected "<name>"`.
 - **Change agent or folder** (Agent ▸, Working Directory ▸, the settings page, `apply`): the selected session only, through `changeAgent` (§9.5, §9.8). `config.command` and `cwd` are still saved: they're the defaults for new sessions and the next launch.
 - **`sessionsChanged()`**, after any status, selection, name or count change: the pill (§7.11), the header title, the sidebar width (0 with one session) and its rows.
-- **Close** (`closeSession(_:)`: a row's ×, ⌘W, Close Session, a row's menu): the last session can't be closed (M24; Close Session is disabled, × isn't shown and ⌘W does nothing), until pills can go away in M25. An idle or done session closes at once. A working or waiting one asks first (below). `removeSession` clears its callbacks, runs `terminateChild(reap: true)` (§9.4) and detaches it. If it was selected, the next one is selected, or the previous one if it was last. Logs `session: closed "<name>"`.
+- **Close** (`closeSession(_:)`: a row's ×, ⌘W, Close Session, a row's menu): any session (M24 kept the last one; since M25 closing a pill's last session removes the pill, `manager.remove`, §7.18). An idle or done session closes at once. A working or waiting one asks first (below). `removeSession` clears its callbacks, runs `terminateChild(reap: true)` (§9.4) and detaches it. If it was selected, the next one is selected, or the previous one if it was last. Logs `session: closed "<name>"`.
 - **An agent that exits on its own** keeps its row, with "process exited… Press Enter to restart." in its terminal (§9.3).
 - **Rename** (`beginRename`): a double-click on a row, Rename… in a row's menu, or Rename Session… in the Poppy menu (from the collapsed pill, after the expand, via `afterExpand`). With the sidebar showing names it's edited in the row, otherwise (one session, or the rail) in the header title. `RenameField`: Return commits, Esc cancels, clicking elsewhere commits. Then the terminal gets the keyboard back. Logs `session: renamed to "<name>"`.
 - **Quit** ends every session's agent (§4).
@@ -529,10 +537,20 @@ One pill holds one or more **sessions**: each an agent with its own terminal vie
 
 **The sidebar** (`Views/SidebarView.swift`):
 - **Shown only with 2+ sessions,** at the left of `ExpandedView` below the header, as tall as `contentHost`. The terminal starts at its right edge (one resize when it appears or changes width). The expanded size the user set includes it.
-- **Width:** 168 pt by default. Its right edge (`SidebarResizeHandle`, the 8 pt strip between the rows and the terminal, with the left-right resize cursor) drags it between 120 and 360 pt, always leaving the terminal at least 240 pt (also re-checked after a panel resize). Dragged narrower than 96 pt it snaps to the **rail**, 44 pt with only the logos; dragging the rail out past that opens it again. A double-click on the edge toggles rail and names. While dragging, the terminal follows at most every 0.05 s (coalesced, like §7.13), and exactly on mouse-up. Width and rail are remembered per pill (in memory until M25 saves the layout). Logs `sidebar: names, N pt` / `sidebar: logos only`. (A header toggle button did this first; the user asked for the drag instead.)
+- **Width:** 168 pt by default, saved per pill with the rail since M25 (§8.2). Its right edge (`SidebarResizeHandle`, the 8 pt strip between the rows and the terminal, with the left-right resize cursor) drags it between 120 and 360 pt, always leaving the terminal at least 240 pt (also re-checked after a panel resize). Dragged narrower than 96 pt it snaps to the **rail**, 44 pt with only the logos; dragging the rail out past that opens it again. A double-click on the edge toggles rail and names. While dragging, the terminal follows at most every 0.05 s (coalesced, like §7.13), and exactly on mouse-up. Width and rail are remembered per pill and saved in the layout (M25). Logs `sidebar: names, N pt` / `sidebar: logos only`. (A header toggle button did this first; the user asked for the drag instead.)
 - **Rows** (28 pt, 2 pt apart, 8 pt from the left like the terminal): the agent logo (16 pt) tinted by status (`AgentStatus.tint`, as the pill), and the name (12 pt, `labelColor` when selected, else secondary, truncating). The selected row has a 6 pt rounded `labelColor` 12 % fill, hover 5 %. Hovering shows × (not in the rail, not with one session). Tooltip and accessibility label `"<name> — <agent> (<status>)"`, so status isn't color alone. Right-click: Rename…, Restart Agent, Close Session. A click selects; a double-click renames. In the rail: the logo centered, the label as tooltip.
 - **Scrolling:** only while the rows don't fit. The scroller, scroll wheel and bounce are off otherwise (`hasVerticalScroller` and `verticalScrollElasticity` follow whether they overflow), and it returns to the top when they fit again. No cap on sessions.
 - **Bottom bar** (28 pt): ＋ (a new session, tooltip "New Session (⌘T)") and ⌄ (the menu above; not in the rail). Right-clicking the sidebar's background shows nothing.
+
+### 7.18 Several pills (M25)
+Several pills can be on screen, each a `PanelController` with its own panel, position, anchor corner, expanded size, sidebar and sessions. `PillManager` (`App/PillManager.swift`, owned by `AppDelegate`) holds them in creation order (`pills`) and the **most recent** one (`recent`, weak): set by `expand()` (via `willExpand`), by opening a pill's context menu, and by `open()` (the menu bar's pill list, New Pill, `poppy`). The menu bar menu, the hotkey's "Most recent pill" and the `poppy` command act on it.
+- **Shared, in the manager:** `config` (every global setting: Auto-Open, Usage meters, Agent status, Hotkey opens, and `command`/`cwd` as the defaults for new sessions), `recentDirectories`, `pillDiameter`, the `AgentCatalog`, `hotKeys` (its `onComboChanged` refreshes every pill's settings page), and saving. Pill size, Show Usage and Agent status changes go through `setPillDiameter` / `setShowUsage` (each pill's `usageEnabledChanged()`) / `setStatusHooks` (every session in every pill). Session names are unique across all pills (`uniqueName` checks `manager.allSessions`).
+- **One open at a time:** `expand()` first calls `manager.willExpand(self)`, which collapses any other expanded pill; if that one is animating or in a live resize it returns false and nothing expands (logged `expand: another pill can't fold right now`). A click on another pill is therefore a click outside: the open one folds and the clicked one opens (the click-outside monitor never sees clicks on Poppy's own windows; the fold comes from the expand).
+- **New Pill** (`newPill(command:directory:show:)`): one session with `config.command` and the default folder (or what's given), placed clear of the others (§7.3), expanded and focused (`open()`) unless `show` is false. Logged `pills: new (N pills)`.
+- **Closing a pill's last session** (§7.17) calls `manager.remove(pill)`: `tearDown()` (removes the click-outside monitor, stops the reveal timers, cancels a hotkey recording, ends and detaches every session, drops key status, `orderOut`), then it leaves `pills`; the most recent becomes the last pill. With none left, Poppy stays in the menu bar; New Pill, New Session (menu bar), the hotkey and `poppy` make one. `isRemoved` keeps a late close-question callback off the torn-down views.
+- **Hotkey** (`manager.hotkeyPressed()`, §11): ignored while any pill animates; with no pill, a new pill.
+- **Usage:** one `UsageMonitor` per pill, with an app-wide cache (§9.7).
+- **Debug hook:** pill-level ops in the manager, the rest on `pill` (default the most recent), §12.2.
 
 ## 8. Configuration and state
 
@@ -542,7 +560,7 @@ The directory is `~/.config/poppy/`, created with intermediate directories if mi
 ```json
 { "command": "claude", "cwd": "~", "hotkey": "ctrl+opt+space" }
 ```
-Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the settings page writes these three, and `statusHooks` since M22). `"showUsage": true` (M15, §9.7; written by the settings page). The defaults file written on first launch contains these flags too.
+Flags (M14; a missing or wrongly typed value falls back to the default, never failing the file): `"statusHooks": true` (install status hooks, §9.6; false disables them and Auto-Open), `"autoOpenOnInput": false`, `"autoOpenOnDone": false`, `"autoOpenFocus": true` (§7.15; the settings page writes these three, and `statusHooks` since M22). `"showUsage": true` (M15, §9.7; written by the settings page). `"hotkeyTarget": "recent"` (M25, §11: `recent`, `urgent` or `cycle`, the `HotkeyTarget` enum; any other value is `recent`; written by the settings page). The defaults file written on first launch contains these flags too.
 
 Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", "command": "claude --dangerously-skip-permissions" }]`, extra entries for the Agent submenu (§9.5). It's `var agents: [AgentProfile]?`; the synthesized encoder omits it when nil, so the defaults file doesn't contain it. Decoding it can't fail the whole file: if it doesn't decode (e.g. an entry without `name`), log `config.json "agents" is invalid, ignoring it` and use nil; entries whose `name` or `command` is blank after trimming are dropped.
 
@@ -568,11 +586,15 @@ Optional, user-written only (M12): `"agents": [{ "name": "Claude (skip perms)", 
   - If the result isn't an existing directory, log it and use the home directory.
 - `command` is a shell command string (§9.2).
 
-### 8.2 `PanelState` (`state.json`, app-written; `recentDirectories: [String]?` added in M16, §9.8)
+### 8.2 `PanelState` (`state.json`, app-written; `recentDirectories: [String]?` added in M16, §9.8; `pills` in M25)
+**The layout (M25).** `pills: [SavedPill]?`, `SavedPill { origin: SavedPoint?, expandedSize: SavedSize?, sidebarCollapsed: Bool?, sidebarWidth: Double?, selected: Int?, sessions: [SavedSession] }`, `SavedSession { command, cwd (~-abbreviated), name: String? }` (`name` only when the user chose it; default names are worked out again at launch, so they can renumber). `PillManager.saveLayout()` writes everything (each pill's `savedPill`), plus `pillOrigin` and `expandedSize` from the first pill so an older build still reads the file, `pillDiameter` and `recentDirectories` (global). Saved after every layout change: a session added, closed, selected, renamed, or its agent or folder changed; a pill created, removed, moved or resized; the sidebar toggled or dragged; plus the triggers below, and at quit.
+- **At launch:** each saved pill with sessions becomes a pill (one with none is dropped), each session started fresh (no conversation resumed), the saved one selected; all collapsed. Its origin is used if it's still on a screen (clamped), else a free spot (§7.3). A session whose folder is gone starts in the home folder (logged by `resolvedWorkingDirectory`). No `pills` (a file from before M25) or an empty list: one pill from `pillOrigin`, `expandedSize` and config.json's `command`/`cwd`. The first pill is the most recent.
+
+Before M25 (still read):
 ```json
 { "pillOrigin": { "x": 1200, "y": 16 }, "pillDiameter": 44, "expandedSize": { "width": 760, "height": 480 } }
 ```
-- `pillDiameter: Double?` (M13, §7.14) and `expandedSize: SavedSize?` (M13, §7.13; `nonisolated struct SavedSize: Codable, Sendable { var width: Double; var height: Double }`) are optional, so older files still load; nil means the default. `saveState()` always writes all three.
+- `pillDiameter: Double?` (M13, §7.14) and `expandedSize: SavedSize?` (M13, §7.13; `nonisolated struct SavedSize: Codable, Sendable { var width: Double; var height: Double }`) are optional, so older files still load; nil means the default. `saveState()` always writes all three (since M25 it calls `manager.saveLayout()`).
 - `pillOrigin` is a `nonisolated struct SavedPoint: Codable, Sendable { var x: Double; var y: Double }` (not `CGPoint`, whose Codable form is an array).
 - **Saved after:**
   - every drag end (pill or header)
@@ -715,7 +737,7 @@ Modeled on platoon (`usage.rs`, `codex_usage.rs`, `UsageFooter.tsx`). Shows how 
 
 **`ChildProcess.run(_:label:input:timeout:until:)`** (`nonisolated`; M15, extracted from the M12 probe): posix_spawn with `SETSID | CLOEXEC_DEFAULT`; its pipes are `FD_CLOEXEC` in Poppy (so an agent started meanwhile doesn't inherit them); stdin `/dev/null` or a pipe holding `input` (`F_SETNOSIGPIPE`, kept open until the end), stdout a pipe, stderr `/dev/null`; polls stdout every 100 ms; returns the output when `until(output)` is true (then closes stdin, gives the process up to 1 s to exit on its own, e.g. so Codex can finish writing its files, then SIGKILLs the group) or when the process exits (status included); nil on spawn failure or timeout (logged with `label`). `waitpid` is retried on EINTR. `AgentCatalog.runProbe` now uses it (same behavior as §9.5).
 
-**`UsageMonitor`** (main actor, owned by `PanelController`):
+**`UsageMonitor`** (main actor, one per `PanelController`, for its selected session's agent): since M25 the per-source cache (`sources`) is `static`, shared by every pill, so two pills on one account never fetch twice; a finished fetch (a static `finished`, not tied to the monitor that asked, whose pill may be gone) publishes to every live monitor (`monitors`, a weak `NSHashTable`) showing that source.
 - `harness` (set at init and by `switchAgent`), `enabled` (`config.showUsage`), `onChange: (UsageReport?, String?) -> Void` (report to show, or nil with a reason: nil reason = loading), `supports(harness)`.
 - Per-source cache, keyed by harness and `executablePrefix(command)` (so Codex profiles with different `CODEX_HOME`s don't share numbers): last good report, `nextAllowed`, `inFlight`, last failure reason. Switching back to a harness shows its cached report at once if not stale.
 - `refresh(_:command:)`: for the current agent, or (M24) for `command`, another session's agent whose turn just ended, cached for when that session is shown. Nothing if disabled, unsupported, in flight, or before `nextAllowed`. `setCommand` does nothing for the current command (switching between two Claude sessions doesn't refetch); selecting a session calls it and `setAgentModel` with that session's model. `.poll` (a 60 s `Timer` in `.common` modes) fetches only if there's no report, it's stale, or it's ≥ 5 min old; `.event` (expand, agent switch, a turn ending = status `.done`, turning Show Usage on) fetches regardless of age. After a success `nextAllowed` = now + 2 min (Claude; its `/usage` hits a rate-limited endpoint) / 1 min (Codex, Antigravity); after `signedOut` (Antigravity) 1 min; after `unavailable` (e.g. Claude with an API-key login or signed out) 10 min; after `noAnswer` (Antigravity) never, until Show Usage is toggled; after another failure, 5 min. (M15–M20 also had a 429 backoff and `keychainDenied` for the old Claude source; removed in M21.) Failures keep showing the last report until it goes stale; with none, the reason is shown.
@@ -733,14 +755,14 @@ Folders opened with Poppy some other way (`open -a Poppy <dir>`, Finder's Open W
 When the directory changes, the one being left is also kept in the recents (review fix), so the directory Poppy launched in can be picked again.
 
 ### 9.9 The `poppy` shell command (M16)
-`poppy [options] [directory]` in a terminal opens Poppy with the agent in that directory (default: the shell's current directory), launching it if needed. `scripts/install.sh` (§12) installs it as a small wrapper script, `$BIN_DIR/poppy` (default `~/.local/bin`), with the installed app's path baked in:
+`poppy [options] [directory]` in a terminal opens Poppy on a session in that directory (default: the shell's current directory), launching it if needed: since M25 the first session already there, else a new one (it never restarts a running agent; M16–M24 restarted the one agent there). `scripts/install.sh` (§12) installs it as a small wrapper script, `$BIN_DIR/poppy` (default `~/.local/bin`), with the installed app's path baked in:
 ```sh
 #!/bin/sh
 exec "${POPPY_APP:-/Applications/Poppy.app}/Contents/MacOS/poppy" --cli "$@"
 ```
 (In M16 it was a `poppy()` function in the developer's `~/.zshrc` pointing at `~/Documents/poppy/build/Poppy.app`; a shell function takes precedence over the script, and the installer warns if it finds one.)
 **Client** (`CommandLineClient`, `nonisolated`): `main.swift` checks for `--cli` before creating `NSApplication` and, if present, runs `CommandLineClient.run(<the arguments after it>)` and `exit`s with its status; no app, window or menu bar item. It:
-1. Parses the options (help text in `CommandLineClient.usage`): `-a/--agent NAME` (a built-in agent by name or command word, `claude`, `codex`, `agy`, `opencode`, or a `config.json` agent by name, case-insensitive; unknown → error listing the names), `-c/--command CMD` (any command), `--pill small|medium|large`, `--auto-open input|done|both|off` (sets both flags), `--focus`/`--no-focus`, `--usage`/`--no-usage`, `-b/--background` (don't expand), `-h/--help`, and at most one directory (relative to the shell's cwd; must exist). Errors go to stderr as `poppy: …` plus a hint, exit 2. `Config.load(quiet: true)` reads `agents` without writing defaults or logging.
+1. Parses the options (help text in `CommandLineClient.usage`): `-a/--agent NAME` (a built-in agent by name or command word, `claude`, `codex`, `agy`, `opencode`, or a `config.json` agent by name, case-insensitive; unknown → error listing the names), `-c/--command CMD` (any command), `--pill small|medium|large`, `--auto-open input|done|both|off` (sets both flags), `--focus`/`--no-focus`, `--usage`/`--no-usage`, `-b/--background` (don't expand), `--new` and `--new-pill` (M25), `-h/--help`, and at most one directory (relative to the shell's cwd; must exist). Errors go to stderr as `poppy: …` plus a hint, exit 2. `Config.load(quiet: true)` reads `agents` without writing defaults or logging.
 2. Requires running inside the bundle (`Bundle.main.bundleURL` ends in `.app`; `swift run` isn't registered with LaunchServices).
 3. Writes the `LaunchRequest` as JSON to `~/.config/poppy/run/request-<UUID>.json` (directory 0700, file 0600).
 4. Runs `/usr/bin/open -g -a <this bundle> <file>` (`-g`: Poppy isn't brought forward; launched if not running).
@@ -748,11 +770,15 @@ exec "${POPPY_APP:-/Applications/Poppy.app}/Contents/MacOS/poppy" --cli "$@"
 
 **Why a file, not a `poppy://` URL:** a registered URL scheme could be opened by any web page, and a request can carry a command to run. A request file in the user's own `~/.config/poppy/run/` can only come from something that can already write Poppy's config (and so set `command` anyway).
 
-**`LaunchRequest`** (`nonisolated struct`, Codable): `directory`, `command`, `pillDiameter`, `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus`, `showUsage` (all optional: nil = leave as is), `show` (default true). The app accepts a request file only if it's directly in `run/` (compared with symlinks resolved on both sides, for a symlinked `~/.config`; review fix), named `request-*.json` (`isRequestFile`); `consume` reads and deletes it (an invalid one is logged and deleted). At launch, request files older than 5 min are deleted.
+**`LaunchRequest`** (`nonisolated struct`, Codable): `directory`, `command`, `pillDiameter`, `autoOpenOnInput`, `autoOpenOnDone`, `autoOpenFocus`, `showUsage` (all optional: nil = leave as is), `show` (default true), `new: Bool?`, `newPill: Bool?` (M25). The app accepts a request file only if it's directly in `run/` (compared with symlinks resolved on both sides, for a symlinked `~/.config`; review fix), named `request-*.json` (`isRequestFile`); `consume` reads and deletes it (an invalid one is logged and deleted). At launch, request files older than 5 min are deleted.
 
 **App side:**
 - `AppDelegate.application(_:open:)`: each request file is consumed; anything else is ignored and logged (§9.8). Logs `open request: <dir>[, agent <command>]`. If the controller exists, `controller.apply(request)`; otherwise (the open event arrives before `applicationDidFinishLaunching` when it launched Poppy, verified) it's appended to `pendingRequests`: launch then sets `config.command` and `config.cwd` from them (§4) before creating the session, so the agent starts once, in the right place, and then `apply`s each in order.
-- **`PanelController.apply(_:)`**: settings first, each through the same code as its menu item and saved the same way (`setPillDiameter`, only for a preset diameter whoever wrote the request (review fix), `setAutoOpen(key, value)`, `toggleShowUsage` if different); then the directory (validated, added to the recents) and command together through `changeAgent(command:directory:)`, **at most one restart**; then `show` expands or focuses the panel as in §9.8.
+- **`PillManager.apply(_:)`** (M25; `PanelController.apply` M16–M24, which now only serves the menu's folder changes, §9.8): settings first, each through the same code as the settings page and saved the same way (`setPillDiameter`, only for a preset diameter whoever wrote the request (review fix), `setAutoOpen(key, value)`, `setShowUsage`); the directory (validated, added to the recents; invalid → the default folder, logged); a requested command is saved as `command` (the default for new sessions). Then, logged `poppy: …`:
+  - `newPill` → a new pill with one session there (expanded unless `-b`).
+  - otherwise, unless `new`: the first session in that folder (normalized) and, with `-a`/`-c`, running that command, looking in the most recent pill first, then the others in order → `reveal(_:show:)`: selected, and its pill opened and focused. With `-b` it's only selected, and not while the user is typing in that pill.
+  - otherwise a new session in the most recent pill (`addSession`): selected and shown; with `-b` only added, selected unless the user is typing in that pill. With no pill, a new pill.
+  - Known edge: `--new-pill` that launches Poppy with no saved layout gives two pills (the default one, started from the request's folder, and the requested one).
 
 ### 9.10 Images and files into the agent (M17)
 Agents take an attachment as a **path**: Claude Code and Codex attach an image when its path is pasted (a terminal drop is exactly that). So Poppy turns every image or file into shell-escaped paths and pastes them into the agent (`PoppyTerminalView.pasteText`: `send(txt:)`, wrapped in `ESC[200~`/`ESC[201~` when `terminal.bracketedPasteMode`, so the agent sees one paste). SwiftTerm's own paste only reads text and it accepts no drops.
@@ -920,6 +946,11 @@ The user chose to replace the Claude meter's source (the Keychain token + `api.a
 - If `id.signature` is `'Popy'` and `id.id == 1` (otherwise return `eventNotHandledErr`): first `let hk = Unmanaged<GlobalHotKey>.fromOpaque(userData!).takeUnretainedValue()` **outside** any closure (`GlobalHotKey` is main-actor, therefore Sendable; the raw `userData` pointer must not be captured), then `MainActor.assumeIsolated { hk.fire() }` (`fire()` is `fileprivate` and calls the private `action`).
 - It returns `noErr`.
 
+**Which pill** (M25, `PillManager.hotkeyPressed()`, ignored while any pill animates; with no pill, New Pill): `config.hotkeyTarget`, the settings page's "Hotkey opens" pop-up in the first card (Most recent pill / Most urgent first / Each pill in turn):
+- **recent:** the most recent pill's `hotkeyPressed()`, below.
+- **urgent:** the first waiting session, else the first unseen done one, looking in the most recent pill first, then pill order; `hotkeyPressed(showing:)` on its pill: expanded and key on that session → collapse; expanded and key on another → select it; otherwise select it, then `hotkeyPressed()`. Nothing needs you → as recent.
+- **cycle:** with a pill expanded and key and 2+ pills, collapse it and call the next pill's `hotkeyPressed()` (creation order, wrapping; a collapsed pill moves to the mouse's screen first, as below). Otherwise as recent.
+
 **Action** (`PanelController.hotkeyPressed()`, ignored while animating)
 - **Collapsed:**
   1. If `screenWithMouse()` differs from `screen(for: pillFrame)` (compared by screen number, §7.2), move the pill to the default position (§7.3) on the mouse's screen and save the state.
@@ -1023,8 +1054,9 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 
 ### 12.2 Debug hook and scripted tests (M24)
 **`DebugHook`** (`App/DebugHook.swift`) lets scripts drive Poppy Dev without the mouse. `AppDelegate` creates it only when `AppVariant.isDev`, so the installed Poppy never has it.
-- **Reading commands:** every 0.1 s it reads `debug-cmd-<id>.json` from Poppy Dev's own `run/` folder (the same folder, and the same trust, as the `poppy` command's request files, §9.9). Each command is `{id, op, index?, command?, directory?, name?, key?, value?, width?}`, deleted after it's read.
-- **Running them:** `PanelController.debugRun` runs each through the same code as the UI. The ops are:
+- **Reading commands:** every 0.1 s it reads `debug-cmd-<id>.json` from Poppy Dev's own `run/` folder (the same folder, and the same trust, as the `poppy` command's request files, §9.9). Each command is `{id, op, index?, command?, directory?, name?, key?, value?, width?, pill?, new?, newPill?}`, deleted after it's read.
+- **Pill ops** (M25, `PillManager.debugRun`): `newPill` (command, directory, value: show), `hotkey` (the hotkey's handler), `hotkeyTarget` (key), `apply` (a `LaunchRequest`: directory, command, new, newPill, value: show), `openPill` (pill), `statusMenu` (builds the menu bar menu), `reloadLayout` (reads back the saved pills).
+- **Running them:** every other op goes to pill `pill` (default the most recent), whose `PanelController.debugRun` runs it through the same code as the UI. The ops are:
   - `state`;
   - `new`, `click`, `close`, `confirm` (value: close or cancel), `rename` (name, or null to cancel), `restart`;
   - `cmdT`, `cmdW`, `cmdN` (through GlassPanel's callbacks, as the keys);
@@ -1034,7 +1066,7 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
   - `autoOpen` (key, value);
   - `settings` (value);
   - `snapshot` (a PNG of the panel's content over the window color, at the path given as `directory`; glass and vibrant text don't render).
-- **Answering:** it writes `debug-state-<id>.json` with `debugState()`: the panel (`state`, `animating`, `key`, `settings`, `confirm`, `confirmAligned`, `sidebarWidth`, `terminalWidth`, `rail`, `sidebarScrolls`, `selected`, `header`, the pill's `status`, `badge` and `label`, `autoOpenedFor`) and every session (`id`, `name`, `custom`, `command`, `directory`, `status`, `statusFile`, `pid`, `exited`, `shown`), plus `error` if the op failed. It logs `debug hook: <op>`.
+- **Answering:** it writes `debug-state-<id>.json` with `manager.debugState(for:)`: `pills` (each one's `state`, `key`, `x`/`y`, `selected` and sessions), `recent`, `hotkeyTarget`, `menuPills` (the menu bar's pill list as last built), and the targeted pill's `debugState()`: the panel (`state`, `animating`, `key`, `settings`, `confirm`, `confirmAligned`, `sidebarWidth`, `terminalWidth`, `rail`, `sidebarScrolls`, `selected`, `header`, the pill's `status`, `badge` and `label`, `autoOpenedFor`) and every session (`id`, `name`, `custom`, `command`, `directory`, `status`, `statusFile`, `pid`, `exited`, `shown`), plus `error` if the op failed. It logs `debug hook: <op>`.
 
 **`scripts/test-sessions.py`** (run with `./scripts/dev.sh && ./scripts/test-sessions.py`):
 - **How it works:** it starts fake agents (`cat` in temporary folders) and fakes their hooks by writing status words into each session's status file, exactly as the hooks do (§9.6). Then it checks the state.
@@ -1050,6 +1082,8 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
   - back to one session.
 - **While it runs:** Poppy Dev briefly takes the keyboard when a test needs the panel focused. A click in another app meanwhile collapses the panel (§6.3) and can fail a test. At the end it puts the Auto-Open settings back.
 - **What it can't check:** real key presses, hover, the look on glass. Those stay in the user's manual test.
+
+**`scripts/test-pills.py`** (M25; `./scripts/dev.sh && ./scripts/test-pills.py`): restarts Poppy Dev with a pre-M25 `state.json` and `command` `cat`, and covers the old file loading as one pill, new pills not overlapping, one open at a time, the menu bar's pill list, the three hotkey modes, Auto-Open busy in another pill and across pills, `poppy` reuse / `-c` / `--new` / `--new-pill` / `-b`, the saved layout, a relaunch restoring it with fresh agents, a missing folder starting at home, and closing every pill then the hotkey making one. At the end it restores Poppy Dev's `config.json` and `state.json` and starts it again.
 
 ## 13. Milestones (each builds and runs on its own)
 
@@ -1079,6 +1113,7 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 | M22 | `Views/SettingsView.swift`; the settings page in the expanded view (Agent, Working directory, Hotkey, Pill size, Usage meters, Agent status, Auto-Open, Edit config.json…), opened by "Settings…" or ⌘, (from the pill with the expand animation), with "Settings" and Done in the header; Pill Size, Auto-Open, Show Usage and Set Hotkey leave the menu; the hotkey recorder window is replaced by an inline shortcut field (`Hotkey/HotKeyRecorder.swift` removed) (§7.9, §7.10, §6.2, §11.2) | — |
 | M23 | `App/AppVariant.swift`; `bundle.sh` builds Poppy Dev by default (`--release` for Poppy.app, used by `install.sh`): own bundle ID, `poppy-dev` executable, `~/.config/poppy-dev/`, no default hotkey, DEV tag on the pill (§12.1) | — |
 | M24 | Sessions and the sidebar in one pill: `Views/SidebarView.swift`, `ConfirmView`, `TerminalSession` id/name/attach/detach, `PanelController` sessions (＋, ⌘T, ⌘W, ⌘1–9, New/Rename/Close Session, close question, rename, auto-numbered names), the pill's most-urgent color, badge and label, per-session done seen and Auto-Open, usage following the selected session; app-wide status-file generation (§9.6); `App/DebugHook.swift` and `scripts/test-sessions.py` for Poppy Dev (§7.17, §7.11, §7.15, §9.7, §12.2) | The layout isn't saved: a relaunch starts one session (M25). The last session can't be closed. |
+| M25 | Several pills: `App/PillManager.swift` (pills, most recent, one expanded at a time, placement without overlap, global settings, the menu bar menu with its pill list, New Pill), "Hotkey opens" (`hotkeyTarget`: recent / urgent / cycle), Auto-Open across pills, `poppy` reuse-or-add with `--new` / `--new-pill`, closing the last session removes the pill (none left: menu bar only), the saved layout (`PanelState.pills`, old files migrate), the app-wide usage cache; `scripts/test-pills.py` (§7.18, §8.2, §9.7, §9.9, §11, §12.2) | — |
 
 **M2 spike:**
 - A 240×80 panel at the default bottom-right position (16 pt margin).
@@ -1113,3 +1148,4 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 22. Whether the footer's group labels fit; whether the ring follows a `/model` switch inside `agy`; whether `agy -p /usage` stays quick enough to run on every expand and turn end, (running it while an interactive `agy` is mid-turn, and hook stdin in the TUI, were measured fine); whether `/logout` removes the `gemini`/`antigravity` Keychain item (the signed-in check relies on it); whether `agy -p /usage` with a stale or revoked login (item still present) opens the browser: M20.
 23. Whether `claude -p /usage` prints the limit lines for Pro, Max and Team plans and for an API-key login (which has no limits: expect the "couldn't read" failure or an error), what a signed-out or rate-limited Claude Code prints, and that no user hooks fire (checked once with `--debug hooks`; the check should be repeated after Claude Code updates): M21.
 24. Whether a detached SwiftTerm view keeps up with output and comes back correct at a different size (one SIGWINCH, no garbled screen); memory and CPU with many live sessions (one 0.25 s status timer each); Auto-Open across sessions with real agents (two Claude sessions in one folder, one asking for permission while another is selected); the close question's look on the real glass: M24 (scripted tests passed; the user tested commands, hover, rename, the ⌄ menu, light and dark mode, and the close question).
+25. Several pills: real clicks from one pill to another, keyboard focus after one folds and another opens (and after an open pill's last session closes), the real hotkey in each mode over fullscreen apps and with the mouse on a second display, the `poppy` command through `open -a` (running and launching), two pills with Claude sharing usage numbers, quitting from the menu, saved positions across displays, CPU and memory with several pills: M25 (scripted tests passed; the user checked all of these).

@@ -34,6 +34,8 @@ nonisolated struct Config: Codable, Sendable {
     var autoOpenFocus = true
     /// Usage footer and pill ring (DESIGN §9.7). Default true.
     var showUsage = true
+    /// Which pill the hotkey opens when there are several (DESIGN §11). Default recent.
+    var hotkeyTarget = HotkeyTarget.recent
 
     init(command: String = Config.defaultCommand, cwd: String = Config.defaultCwd, hotkey: String = Config.defaultHotkey) {
         self.command = command
@@ -52,6 +54,7 @@ nonisolated struct Config: Codable, Sendable {
         autoOpenOnDone = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnDone)) ?? false
         autoOpenFocus = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenFocus)) ?? true
         showUsage = (try? c.decodeIfPresent(Bool.self, forKey: .showUsage)) ?? true
+        hotkeyTarget = (try? c.decodeIfPresent(HotkeyTarget.self, forKey: .hotkeyTarget)) ?? .recent
         // A bad "agents" entry must not discard the rest of the file: drop the whole list.
         do {
             agents = try c.decodeIfPresent([AgentProfile].self, forKey: .agents)?.filter {
@@ -181,6 +184,20 @@ nonisolated struct Config: Codable, Sendable {
     }
 }
 
+/// "Hotkey opens" (DESIGN §11): the pill used last, the one that needs you most, or the
+/// next one in turn.
+nonisolated enum HotkeyTarget: String, Codable, Sendable, CaseIterable {
+    case recent, urgent, cycle
+
+    var title: String {
+        switch self {
+        case .recent: "Most recent pill"
+        case .urgent: "Most urgent first"
+        case .cycle: "Each pill in turn"
+        }
+    }
+}
+
 nonisolated struct SavedPoint: Codable, Sendable {
     var x: Double
     var y: Double
@@ -191,8 +208,30 @@ nonisolated struct SavedSize: Codable, Sendable {
     var height: Double
 }
 
+/// One session of a saved pill (DESIGN §8.2): restarted fresh at launch.
+nonisolated struct SavedSession: Codable, Sendable {
+    var command: String
+    /// `~`-abbreviated, like config.json's `cwd`.
+    var cwd: String
+    /// Only a name the user chose; default names are worked out again.
+    var name: String?
+}
+
+/// One pill of the saved layout (DESIGN §8.2).
+nonisolated struct SavedPill: Codable, Sendable {
+    var origin: SavedPoint?
+    var expandedSize: SavedSize?
+    var sidebarCollapsed: Bool?
+    var sidebarWidth: Double?
+    var selected: Int?
+    var sessions: [SavedSession]
+}
+
 /// App-written panel state (DESIGN §8.2).
 nonisolated struct PanelState: Codable, Sendable {
+    /// The layout (M25). Without it (an older file) `pillOrigin` and `expandedSize` make
+    /// one pill; they're still written, from the first pill.
+    var pills: [SavedPill]?
     var pillOrigin: SavedPoint?
     /// Pill diameter preset (DESIGN §7.14); nil means the default.
     var pillDiameter: Double?

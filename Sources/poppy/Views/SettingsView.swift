@@ -23,6 +23,9 @@ struct SettingsModel {
     /// The hotkey's display string; nil when none is registered.
     var hotkey: String?
     var canRecordHotkey: Bool
+    /// "Hotkey opens" (DESIGN §11): the choices' titles and the current one.
+    var hotkeyTargets: [String]
+    var hotkeyTarget: Int
 }
 
 /// The settings page inside the expanded panel, in place of the terminal (DESIGN §7.9),
@@ -41,12 +44,14 @@ final class SettingsView: NSView {
     var onShowUsage: ((Bool) -> Void)?
     var onStatusHooks: ((Bool) -> Void)?
     var onAutoOpen: ((_ key: String, _ on: Bool) -> Void)?
+    var onHotkeyTarget: ((Int) -> Void)?
     var onEditConfig: (() -> Void)?
 
     let hotkeyField = HotkeyField()
     private let scrollView = NSScrollView()
     private let agentPopUp = FirstMousePopUpButton()
     private let directoryPopUp = FirstMousePopUpButton()
+    private let hotkeyTargetPopUp = FirstMousePopUpButton()
     private let pillStack = NSStackView()
     private var pillRadios: [NSButton] = []
     private let usageSwitch = FirstMouseSwitch()
@@ -69,6 +74,8 @@ final class SettingsView: NSView {
         agentPopUp.action = #selector(agentChosen)
         directoryPopUp.target = self
         directoryPopUp.action = #selector(directoryChosen)
+        hotkeyTargetPopUp.target = self
+        hotkeyTargetPopUp.action = #selector(hotkeyTargetChosen)
         pillStack.orientation = .horizontal
         pillStack.spacing = 14
         for (control, selector) in [(usageSwitch, #selector(usageChanged)), (hooksSwitch, #selector(hooksChanged)),
@@ -89,6 +96,7 @@ final class SettingsView: NSView {
             Self.row("Agent", restartNote, agentPopUp).view,
             Self.row("Working directory", restartNote, directoryPopUp).view,
             Self.row("Hotkey", hotkeyField.messageLabel, hotkeyField).view,
+            Self.row("Hotkey opens", "Which pill, when there are several.", hotkeyTargetPopUp).view,
         ])
         let pill = Self.group([
             Self.row("Pill size", nil as String?, pillStack).view,
@@ -125,7 +133,7 @@ final class SettingsView: NSView {
         for view in content.arrangedSubviews {
             view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
-        for popUp in [agentPopUp, directoryPopUp] {
+        for popUp in [agentPopUp, directoryPopUp, hotkeyTargetPopUp] {
             popUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
             popUp.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
         }
@@ -159,6 +167,7 @@ final class SettingsView: NSView {
         setAccessibilityLabel("Settings")
         agentPopUp.setAccessibilityLabel("Agent")
         directoryPopUp.setAccessibilityLabel("Working directory")
+        hotkeyTargetPopUp.setAccessibilityLabel("Hotkey opens")
         usageSwitch.setAccessibilityLabel("Usage meters")
         hooksSwitch.setAccessibilityLabel("Agent status")
         onInputSwitch.setAccessibilityLabel("Auto-Open when the agent needs input")
@@ -172,7 +181,7 @@ final class SettingsView: NSView {
 
     /// Tab order with Full Keyboard Access on (rebuilt when the pill size radios change).
     private func linkKeyLoop() {
-        let loop: [NSView] = [agentPopUp, directoryPopUp, hotkeyField] + pillRadios
+        let loop: [NSView] = [agentPopUp, directoryPopUp, hotkeyField, hotkeyTargetPopUp] + pillRadios
             + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch, editConfigButton]
         nextKeyView = loop.first
         for (view, next) in zip(loop, loop.dropFirst()) { view.nextKeyView = next }
@@ -328,6 +337,11 @@ final class SettingsView: NSView {
             ? "Opens the panel by itself when the agent needs you."
             : "Needs Agent status, above."
         hotkeyField.show(model.hotkey, enabled: model.canRecordHotkey)
+        if hotkeyTargetPopUp.itemTitles != model.hotkeyTargets {
+            hotkeyTargetPopUp.removeAllItems()
+            hotkeyTargetPopUp.addItems(withTitles: model.hotkeyTargets)
+        }
+        hotkeyTargetPopUp.selectItem(at: model.hotkeyTarget)
     }
 
     // MARK: Keyboard
@@ -362,6 +376,10 @@ final class SettingsView: NSView {
         } else {
             onChooseFolder?()
         }
+    }
+
+    @objc private func hotkeyTargetChosen() {
+        onHotkeyTarget?(hotkeyTargetPopUp.indexOfSelectedItem)
     }
 
     @objc private func autoOpenChanged(_ sender: NSSwitch) {

@@ -5,8 +5,9 @@ nonisolated enum PanelSizes {
     static let pillPresets: [(name: String, diameter: CGFloat)] = [("Small", 36), ("Medium", 44), ("Large", 56)]
 }
 
-/// Owns the panel and its views: state machine, frames, animation, observers,
-/// Poppy menu (DESIGN §5–7).
+/// One pill: owns its panel and views, its sessions, state machine, frames, animation,
+/// observers and Poppy menu (DESIGN §5–7). `PillManager` owns the pills and what they
+/// share (DESIGN §7.18).
 final class PanelController: NSObject {
     enum State { case collapsed, expanded }
 
@@ -26,12 +27,20 @@ final class PanelController: NSObject {
     static let fadeDuration: TimeInterval = 0.12
 
     let panel: GlassPanel
-    private var config: Config
-    private let agents: AgentCatalog
-    /// The running agent's subscription usage (DESIGN §9.7).
+    unowned let manager: PillManager
+    /// The global settings, shared by every pill (DESIGN §8.1).
+    private var config: Config {
+        get { manager.config }
+        set { manager.config = newValue }
+    }
+    private var agents: AgentCatalog { manager.agents }
+    /// The selected session's agent's subscription usage (DESIGN §9.7).
     private let usage: UsageMonitor
-    /// Recent working directories, newest first (DESIGN §9.8).
-    private var recentDirectories: [String]
+    /// Recent working directories, newest first, shared by every pill (DESIGN §9.8).
+    private var recentDirectories: [String] {
+        get { manager.recentDirectories }
+        set { manager.recentDirectories = newValue }
+    }
     static let maxRecentDirectories = 8
     /// The pill's sessions in sidebar order, and the one shown (DESIGN §7.17). Never empty.
     private var sessions: [TerminalSession] = []
@@ -64,8 +73,9 @@ final class PanelController: NSObject {
     private var needsReclamp = false
     private(set) var pillFrame: NSRect
     private var anchor = Anchor(right: true, top: false)
-    /// The pill is a glass circle holding the logo; its diameter is a preset (DESIGN §7.14).
-    private var pillDiameter: CGFloat
+    /// The pill is a glass circle holding the logo; its diameter is a preset, the same
+    /// for every pill (DESIGN §7.14).
+    private var pillDiameter: CGFloat { manager.pillDiameter }
     private var pillSize: NSSize { NSSize(width: pillDiameter, height: pillDiameter) }
     private var pillCornerRadius: CGFloat { pillDiameter / 2 }
     /// The expanded size the user chose by resizing (DESIGN §7.13).
@@ -107,36 +117,32 @@ final class PanelController: NSObject {
     private(set) var settingsShown = false
     /// Settings… from the pill: the expand is still running (auto-opens leave the page alone).
     private var openingSettings = false
-    /// Set by AppDelegate; the settings page shows and records the hotkey through it (DESIGN §7.9).
-    weak var hotKeys: HotKeyManager? {
-        didSet { hotKeys?.onComboChanged = { [weak self] in self?.refreshSettings() } }
-    }
+    /// The settings page shows and records the hotkey through it (DESIGN §7.9).
+    private var hotKeys: HotKeyManager? { manager.hotKeys }
 
-    /// `config`'s `command` and `cwd` are the first session's, and the defaults for new ones.
-    init(config: Config) {
-        self.config = config
-        agents = AgentCatalog(launchCommand: config.command)
-        usage = UsageMonitor(command: config.command, enabled: config.showUsage)
-        let saved = PanelState.load()
-        recentDirectories = saved.recentDirectories ?? []
-        if let diameter = saved.pillDiameter.map({ CGFloat($0) }),
-           Self.pillPresets.contains(where: { $0.diameter == diameter }) {
-            pillDiameter = diameter
-        } else {
-            pillDiameter = Self.defaultPillDiameter
-        }
+    /// A pill with `saved`'s sessions (never empty), each started fresh, at `frame`.
+    init(manager: PillManager, saved: SavedPill, frame: NSRect) {
+        self.manager = manager
+        let first = saved.sessions[0].command
+        usage = UsageMonitor(command: first, enabled: manager.config.showUsage)
         expandedSize = saved.expandedSize.map {
             NSSize(width: max($0.width, ExpandedView.minSize.width), height: max($0.height, ExpandedView.minSize.height))
         } ?? ExpandedView.defaultSize
-        let pillSize = NSSize(width: pillDiameter, height: pillDiameter)
-        pillFrame = Self.initialPillFrame(from: saved, size: pillSize)
+        sidebarRail = saved.sidebarCollapsed ?? false
+        if let width = saved.sidebarWidth {
+            sidebarWidth = max(SidebarView.minWidth, min(CGFloat(width), SidebarView.maxWidth))
+        }
+        let pillSize = frame.size
+        pillFrame = frame
         panel = GlassPanel(contentRect: pillFrame)
 
         glass = GlassBackgroundView(frame: NSRect(origin: .zero, size: pillSize),
-                                    cornerRadius: pillDiameter / 2)
+                                    cornerRadius: pillSize.width / 2)
         glass.autoresizingMask = [.width, .height]
-        pillView = PillView(frame: glass.contentView.bounds, harness: Harness(command: config.command),
-                            title: config.pillTitle)
+        var firstConfig = manager.config
+        firstConfig.command = first
+        pillView = PillView(frame: glass.contentView.bounds, harness: Harness(command: first),
+                            title: firstConfig.pillTitle)
         pillView.autoresizingMask = [.width, .height]
         expandedView = ExpandedView(title: "", size: expandedSize)
         expandedView.isHidden = true
@@ -149,9 +155,22 @@ final class PanelController: NSObject {
         glass.contentView.addSubview(pillView)
         glass.contentView.addSubview(expandedView)
 
-        let first = makeSession(command: config.command, directory: Config.normalize(config.resolvedWorkingDirectory))
-        sessions = [first]
-        first.attach(to: expandedView.contentHost)
+        for each in saved.sessions {
+            // A folder that's gone falls back to the home folder (logged), as `cwd` does.
+            var resolved = manager.config
+            resolved.cwd = each.cwd
+            let name = each.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            sessions.append(makeSession(command: each.command, directory: Config.normalize(resolved.resolvedWorkingDirectory),
+                                        name: name?.isEmpty == false ? name : nil))
+        }
+        selectedIndex = min(max(saved.selected ?? 0, 0), sessions.count - 1)
+        sessionsChanged()  // the sidebar first, so the agents start at their final width
+        // Every agent starts now, as at any launch; only the selected one stays in the panel.
+        for (index, each) in sessions.enumerated() where index != selectedIndex {
+            each.attach(to: expandedView.contentHost)
+            each.detach()
+        }
+        session.attach(to: expandedView.contentHost)
         wireSessionControls()
 
         panel.contentView = glass
@@ -192,6 +211,11 @@ final class PanelController: NSObject {
             self?.setShowUsage(on)
             self?.refreshSettings()
         }
+        settings.onHotkeyTarget = { [weak self] index in
+            guard let self, HotkeyTarget.allCases.indices.contains(index) else { return }
+            manager.setHotkeyTarget(HotkeyTarget.allCases[index])
+            refreshSettings()
+        }
 
         // Selector-based observers are removed automatically when self deallocates.
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -219,7 +243,6 @@ final class PanelController: NSObject {
         selectionChanged()
         panel.orderFrontRegardless()
         panel.refreshShadow()
-        agents.refreshIfNeeded(agents.profiles(for: agentConfig))
         usage.onChange = { [weak self] report, reason in self?.usageChanged(report, reason: reason) }
         usage.start()
     }
@@ -256,6 +279,11 @@ final class PanelController: NSObject {
     func expand(focus: Bool = true) {
         revealIfArmed()
         guard state == .collapsed, !isAnimating else { return }
+        // Only one pill is open at a time: the other folds first (DESIGN §7.18).
+        guard manager.willExpand(self) else {
+            appLog("expand: another pill can't fold right now")
+            return
+        }
         isAnimating = true
         state = .expanded
         autoOpenedFor = nil
@@ -391,7 +419,7 @@ final class PanelController: NSObject {
     }
 
     /// Retries an auto-open that had to wait, if the agent is still in that status.
-    private func retryPendingAutoOpen() {
+    func retryPendingAutoOpen() {
         guard let reason = pendingAutoOpen else { return }
         pendingAutoOpen = nil
         if let waiting = sessions.first(where: { $0.id == pendingAutoOpenSession }), waiting.status == reason {
@@ -406,7 +434,7 @@ final class PanelController: NSObject {
     private func autoOpen(_ opener: TerminalSession, for reason: AgentStatus) {
         // Also not during a pill drag or with any button down: the drag would keep moving
         // the now-expanded window and save its frame as the pill's.
-        guard !isAnimating, !panel.inLiveResize, NSEvent.pressedMouseButtons == 0 else {
+        guard !manager.isAnimating, !panel.inLiveResize, NSEvent.pressedMouseButtons == 0 else {
             appLog("auto-open: waiting (animating, resizing or mouse down)")
             pendingAutoOpen = reason
             pendingAutoOpenSession = opener.id
@@ -424,6 +452,10 @@ final class PanelController: NSObject {
         }
         if expandedView.confirmView != nil || (state == .expanded && panel.isKeyWindow && opener !== session) {
             appLog("auto-open: skipped (busy in another session)")
+            return
+        }
+        if manager.otherPillIsKey(than: self) {
+            appLog("auto-open: skipped (busy in another pill)")
             return
         }
         // The agent needs the user: the settings page gives way to the terminal (not while
@@ -452,12 +484,13 @@ final class PanelController: NSObject {
 
     // MARK: - Sessions (DESIGN §7.17)
 
-    /// A session with its default name; its agent starts when it's first attached.
-    private func makeSession(command: String, directory: String) -> TerminalSession {
+    /// A session with its default name (or `name`); its agent starts when it's first attached.
+    private func makeSession(command: String, directory: String, name: String? = nil) -> TerminalSession {
         var sessionConfig = config
         sessionConfig.command = command
         sessionConfig.cwd = Config.abbreviate(directory)
         let new = TerminalSession(config: sessionConfig)
+        new.customName = name
         new.defaultName = uniqueName(Self.directoryName(new.workingDirectory), for: new)
         new.onViewReplaced = { [weak self, weak new] in
             if let self, new === session { refocus() }
@@ -471,9 +504,11 @@ final class PanelController: NSObject {
         return new
     }
 
-    /// `base`, or "base 2", "base 3"… (the lowest free number) if another session has it.
+    /// `base`, or "base 2", "base 3"… (the lowest free number) if another session anywhere
+    /// in Poppy has it. (This pill's own sessions are listed too: while it's being built,
+    /// it isn't among the manager's pills yet.)
     private func uniqueName(_ base: String, for named: TerminalSession) -> String {
-        let taken = Set(sessions.filter { $0 !== named }.map(\.name))
+        let taken = Set((manager.allSessions + sessions).filter { $0 !== named }.map(\.name))
         guard taken.contains(base) else { return base }
         var number = 2
         while taken.contains("\(base) \(number)") { number += 1 }
@@ -517,30 +552,150 @@ final class PanelController: NSObject {
         settingsShown || isAnimating
     }
 
-    /// The last session stays until pills can go away (M25).
-    private var canCloseSession: Bool { sessions.count > 1 }
+    /// Any session can be closed; closing a pill's last one removes the pill (DESIGN §7.18).
+    private var canCloseSession: Bool { true }
 
     /// Ends every agent (quitting, DESIGN §4).
     func terminateAll() {
         sessions.forEach { $0.terminateChild() }
     }
 
-    /// ＋, ⌘T, New Session: a new session in this pill, selected and shown; by default with
-    /// the selected one's agent and folder.
-    private func newSession(command: String? = nil, directory: String? = nil) {
-        let new = makeSession(command: command ?? session.command, directory: directory ?? workingDirectory)
-        sessions.append(new)
-        appLog("session: new \"\(new.name)\" (\(sessions.count) sessions)")
-        sessionsChanged()  // the sidebar first, so the new agent starts at its final width
-        select(sessions.count - 1)  // starts its agent
-        guard !isAnimating else { return }  // an expand in progress shows it anyway
+    var sessionCount: Int { sessions.count }
+    /// Torn down (its last session closed); nothing should touch its views any more.
+    private(set) var isRemoved = false
+    var allSessions: [TerminalSession] { sessions }
+    var selectedSessionIndex: Int { selectedIndex }
+
+    /// This pill in the saved layout (DESIGN §8.2).
+    var savedPill: SavedPill {
+        SavedPill(origin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY),
+                  expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height),
+                  sidebarCollapsed: sidebarRail, sidebarWidth: Double(sidebarWidth), selected: selectedIndex,
+                  sessions: sessions.map {
+                      SavedSession(command: $0.command, cwd: Config.abbreviate($0.workingDirectory), name: $0.customName)
+                  })
+    }
+
+    /// The menu bar's pill list: the selected session's name and the pill's most urgent
+    /// status, with the selected agent's logo (DESIGN §7.12).
+    var menuTitle: String {
+        let count = sessions.count > 1 ? " · \(sessions.count) sessions" : ""
+        return session.name + PillView.statusSuffix(urgentStatus) + count
+    }
+
+    var menuImage: NSImage {
+        HarnessLogo.image(for: Harness(command: session.command), points: 16)
+    }
+
+    private var urgentStatus: AgentStatus {
+        sessions.map(\.status).max { Self.urgency($0) < Self.urgency($1) } ?? .idle
+    }
+
+    /// The pill is going away (its last session closed): end every agent, take it off screen.
+    func tearDown() {
+        isRemoved = true
+        removeClickOutsideMonitor()
+        stopRevealShadowTracking()
+        revealWatchdog?.invalidate()
+        revealWatchdog = nil
+        expandedView.settingsView.hotkeyField.cancel()
+        for each in sessions {
+            each.onStatusChange = nil
+            each.onModelChange = nil
+            each.onViewReplaced = nil
+            each.terminateChild(reap: true)
+            each.detach()
+        }
+        if state == .expanded {
+            panel.makeFirstResponder(nil)
+            panel.allowsKey = false  // the keyboard goes back to the app underneath
+        }
+        panel.orderOut(nil)
+        debugBlurPanel?.orderOut(nil)
+    }
+
+    /// Opens this pill on its selected session, focused: the menu bar's pill list, New Pill.
+    func open() {
+        manager.used(self)
+        guard !isAnimating else { return }
         closeSettings()
+        showFocused()
+    }
+
+    /// Collapsed: expand (folding any other pill). Expanded: take the keyboard.
+    private func showFocused() {
         if state == .collapsed {
             expand()
         } else {
             panel.makeKeyAndOrderFront(nil)
             if let focusTarget { panel.makeFirstResponder(focusTarget) }
         }
+    }
+
+    /// The user is typing in this panel (so a background change mustn't switch sessions).
+    private var userBusyHere: Bool { state == .expanded && panel.isKeyWindow }
+
+    /// `poppy` in a folder that already has this session: select it and, with `show`, open
+    /// the pill on it. Without `show` (`-b`) it's only selected, and not while the user is
+    /// busy in this panel. Never restarts it (DESIGN §9.9).
+    func reveal(_ revealed: TerminalSession, show: Bool) {
+        guard let index = sessions.firstIndex(where: { $0 === revealed }) else { return }
+        guard show else {
+            if !userBusyHere { select(index) }
+            return
+        }
+        manager.used(self)
+        guard !isAnimating else {
+            select(index)
+            return
+        }
+        closeSettings()
+        select(index)
+        showFocused()
+    }
+
+    /// `poppy` with a folder no session has (or `--new`): a new session here; without
+    /// `show` it's only added (and selected unless the user is busy in this panel).
+    func addSession(command: String, directory: String, show: Bool) {
+        if show {
+            manager.used(self)
+            newSession(command: command, directory: directory)
+        } else {
+            newSession(command: command, directory: directory, show: false, select: !userBusyHere)
+        }
+    }
+
+    /// The hotkey's "most urgent" target: the pill opens on `wanted` (and, if it's already
+    /// showing it with the keyboard, collapses as usual).
+    func hotkeyPressed(showing wanted: TerminalSession) {
+        guard !isAnimating, let index = sessions.firstIndex(where: { $0 === wanted }) else { return }
+        if state == .expanded, panel.isKeyWindow, index == selectedIndex {
+            hotkeyPressed()
+            return
+        }
+        closeSettings()
+        select(index)
+        if state == .expanded, panel.isKeyWindow { return }
+        hotkeyPressed()
+    }
+
+    /// ＋, ⌘T, New Session: a new session in this pill, selected and shown; by default with
+    /// the selected one's agent and folder. `show: false` only adds it (selected or not).
+    private func newSession(command: String? = nil, directory: String? = nil, show: Bool = true, select selects: Bool = true) {
+        let new = makeSession(command: command ?? session.command, directory: directory ?? workingDirectory)
+        sessions.append(new)
+        appLog("session: new \"\(new.name)\" (\(sessions.count) sessions)")
+        sessionsChanged()  // the sidebar first, so the new agent starts at its final width
+        if selects {
+            select(sessions.count - 1)  // starts its agent
+        } else {
+            new.attach(to: expandedView.contentHost)  // starts its agent, unseen
+            new.detach()
+        }
+        saveState()
+        guard show, !isAnimating else { return }  // an expand in progress shows it anyway
+        closeSettings()
+        showFocused()
     }
 
     /// Shows session `index` in the terminal area; the others keep running unseen. Looking
@@ -553,6 +708,7 @@ final class PanelController: NSObject {
         session.attach(to: expandedView.contentHost)
         appLog("session: selected \"\(session.name)\"")
         selectionChanged()
+        saveState()
         expandedView.sidebar.reveal(index)
         guard state == .expanded else { return }
         if !settingsShown, expandedView.confirmView == nil, let view = session.focusView { panel.makeFirstResponder(view) }
@@ -580,7 +736,7 @@ final class PanelController: NSObject {
     /// 2+ sessions) and the header title (DESIGN §7.11, §7.17).
     private func sessionsChanged() {
         let multiple = sessions.count > 1
-        let urgent = sessions.map(\.status).max { Self.urgency($0) < Self.urgency($1) } ?? .idle
+        let urgent = urgentStatus
         let needYou = sessions.filter { $0.status == .waiting || $0.status == .done }.count
         pillView.setStatus(urgent, sessionName: multiple ? session.name : nil, selected: session.status, needYou: needYou)
         expandedView.header.setTitle(session.name)
@@ -617,6 +773,7 @@ final class PanelController: NSObject {
         sidebarRail.toggle()
         appLog("sidebar: \(sidebarRail ? "logos only" : "names")")
         sessionsChanged()
+        saveState()
     }
 
     /// The sidebar's edge dragged to `proposed`: narrower than `snapWidth` it closes to the
@@ -633,6 +790,7 @@ final class PanelController: NSObject {
         }
         if ended {
             sessionsChanged()
+            saveState()
             appLog("sidebar: \(sidebarRail ? "logos only" : "names, \(Int(sidebarWidth)) pt")")
             return
         }
@@ -650,7 +808,7 @@ final class PanelController: NSObject {
     /// × , ⌘W, Close Session: ends the agent and removes the row. A working or waiting
     /// agent asks first, over the panel (expanding it if needed).
     private func closeSession(_ closing: TerminalSession) {
-        guard canCloseSession, !isAnimating, expandedView.confirmView == nil,
+        guard !isAnimating, expandedView.confirmView == nil,
               sessions.contains(where: { $0 === closing }) else { return }
         guard closing.status == .working || closing.status == .waiting else {
             removeSession(closing)
@@ -693,15 +851,20 @@ final class PanelController: NSObject {
 
     /// The selected terminal back in the panel, with the keyboard.
     private func confirmEnded() {
+        guard !isRemoved else { return }
         if !session.isShown { session.attach(to: expandedView.contentHost) }
         refocus()
     }
 
     /// Ends the agent and removes the session; the next one (or the previous, if it was
-    /// last) is selected.
+    /// last) is selected. The pill's last session takes the pill with it.
     private func removeSession(_ closing: TerminalSession) {
-        guard sessions.count > 1, let index = sessions.firstIndex(where: { $0 === closing }) else { return }
+        guard let index = sessions.firstIndex(where: { $0 === closing }) else { return }
         appLog("session: closed \"\(closing.name)\"")
+        guard sessions.count > 1 else {
+            manager.remove(self)  // ends the agent too
+            return
+        }
         closing.onStatusChange = nil
         closing.onModelChange = nil
         closing.onViewReplaced = nil
@@ -712,6 +875,7 @@ final class PanelController: NSObject {
         let wasSelected = index == selectedIndex
         sessions.remove(at: index)
         if index < selectedIndex { selectedIndex -= 1 }
+        saveState()
         guard wasSelected else {
             sessionsChanged()
             return
@@ -756,6 +920,7 @@ final class PanelController: NSObject {
         }
         appLog("session: renamed to \"\(renamed.name)\"")
         sessionsChanged()
+        saveState()
     }
 
     @objc private func newSessionFromMenu() {
@@ -810,8 +975,7 @@ final class PanelController: NSObject {
         pickFolder { [weak self] path in
             guard let self else { return }
             let path = Config.normalize(path)
-            recentDirectories = Array(([path] + recentDirectories.filter { $0 != path }).prefix(Self.maxRecentDirectories))
-            saveState()
+            manager.addRecentDirectory(path)
             newSession(directory: path)
         }
     }
@@ -956,8 +1120,8 @@ final class PanelController: NSObject {
             reclamp()
         }
         // A report that arrived during Settings…' own expand leaves the page open; later
-        // ones close it.
-        retryPendingAutoOpen()
+        // ones close it. Other pills' waiting auto-opens may go now too.
+        manager.animationFinished()
         openingSettings = false
         if state == .expanded, let afterExpand {
             self.afterExpand = nil
@@ -1099,11 +1263,14 @@ final class PanelController: NSObject {
         retryPendingAutoOpen()
     }
 
-    /// Applies a pill size preset. Collapsed, the pill grows or shrinks from its nearest
-    /// screen corner; expanded, the next collapse uses it.
     private func setPillDiameter(_ diameter: CGFloat) {
-        guard diameter != pillDiameter, !isAnimating else { return }
-        pillDiameter = diameter
+        manager.setPillDiameter(diameter)
+    }
+
+    /// The manager changed the size preset (every pill's). Collapsed, the pill grows or
+    /// shrinks from its nearest screen corner; expanded, the next collapse uses it.
+    func pillDiameterChanged() {
+        let diameter = pillDiameter
         pillView.setDiameter(diameter)
         if state == .collapsed {
             let corner = Self.anchor(for: pillFrame)
@@ -1118,7 +1285,6 @@ final class PanelController: NSObject {
         } else {
             pillFrame = pillFrame(fromExpanded: panel.frame)  // saved origin matches the new size
         }
-        saveState()
     }
 
     // MARK: - Observers
@@ -1286,16 +1452,16 @@ final class PanelController: NSObject {
         saveState()
     }
 
+    /// The whole layout is saved, every pill (DESIGN §8.2).
     private func saveState() {
-        PanelState(pillOrigin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY),
-                   pillDiameter: pillDiameter,
-                   expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height),
-                   recentDirectories: recentDirectories).save()
+        manager.saveLayout()
     }
 
     // MARK: - Poppy menu (DESIGN §7.10)
 
+    /// The menu acts on the pill it was opened from, which becomes the most recent.
     func showContextMenu(event: NSEvent, in view: NSView) {
+        manager.used(self)
         NSMenu.popUpContextMenu(makeMenu(), with: event, for: view)
     }
 
@@ -1310,8 +1476,10 @@ final class PanelController: NSObject {
         return menu
     }
 
-    private func populateMenu(_ menu: NSMenu) {
-        menu.removeAllItems()
+    /// This pill's items; `clear: false` appends them (the menu bar menu's pill list
+    /// comes first, DESIGN §7.12).
+    func populateMenu(_ menu: NSMenu, clear: Bool = true) {
+        if clear { menu.removeAllItems() }
 
         // Sessions (DESIGN §7.17). The ⌘ hints are handled by GlassPanel (§6.2).
         for (title, action, key) in [("New Session", #selector(newSessionFromMenu), "t"),
@@ -1322,6 +1490,7 @@ final class PanelController: NSObject {
             item.target = self
             item.isEnabled = !isAnimating && (action != #selector(closeSessionFromMenu) || canCloseSession)
             menu.addItem(item)
+            if action == #selector(newSessionFromMenu) { menu.addItem(manager.newPillItem()) }
         }
 
         menu.addItem(.separator())
@@ -1445,28 +1614,16 @@ final class PanelController: NSObject {
         apply(LaunchRequest(directory: path, show: show))
     }
 
-    /// Applies a request from the `poppy` command or a folder handed to Poppy (DESIGN §9.9):
-    /// settings first, then the agent and directory with at most one restart, then (if
-    /// `show`) expands and focuses the panel. Everything is saved like the menu's changes.
-    func apply(_ request: LaunchRequest) {
-        // Only the presets, whoever wrote the request (DESIGN §7.14).
-        if let diameter = request.pillDiameter.map({ CGFloat($0) }),
-           Self.pillPresets.contains(where: { $0.diameter == diameter }) {
-            setPillDiameter(diameter)
-        }
-        for (key, value) in [("autoOpenOnInput", request.autoOpenOnInput), ("autoOpenOnDone", request.autoOpenOnDone),
-                             ("autoOpenFocus", request.autoOpenFocus)] {
-            if let value { setAutoOpen(key, value) }
-        }
-        if let showUsage = request.showUsage { setShowUsage(showUsage) }
-
+    /// The selected session to another folder (the menu, the picker, the settings page;
+    /// DESIGN §9.8), with at most one restart, then (if `show`) expands and focuses the
+    /// panel. (The `poppy` command goes through `PillManager.apply` since M25.)
+    private func apply(_ request: LaunchRequest) {
         var directory = workingDirectory
         if let requested = request.directory {
             let path = Config.normalize(requested)
             if Self.isDirectory(path) {
                 directory = path
-                recentDirectories = Array(([path] + recentDirectories.filter { $0 != path })
-                    .prefix(Self.maxRecentDirectories))
+                manager.addRecentDirectory(path)
                 saveState()
             } else {
                 appLog("working directory \(path) is not a directory; ignored")
@@ -1477,12 +1634,7 @@ final class PanelController: NSObject {
 
         guard request.show, !isAnimating else { return }
         closeSettings()  // the user wants the agent
-        if state == .collapsed {
-            expand()
-        } else {
-            panel.makeKeyAndOrderFront(nil)
-            if let focusTarget { panel.makeFirstResponder(focusTarget) }
-        }
+        showFocused()
     }
 
     /// Runs `command` in `directory` in the selected session: one restart if either
@@ -1511,9 +1663,10 @@ final class PanelController: NSObject {
         session.switchTo(command: command, directory: Config.abbreviate(directory))
         if directoryChanged { session.defaultName = uniqueName(Self.directoryName(directory), for: session) }
         selectionChanged()  // logo, title, usage
+        saveState()
     }
 
-    private static func isDirectory(_ path: String) -> Bool {
+    static func isDirectory(_ path: String) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
@@ -1532,28 +1685,18 @@ final class PanelController: NSObject {
         refreshSettings()
     }
 
-    /// Sets and saves one Auto-Open flag (DESIGN §7.15).
+    /// Global settings live in the manager, shared by every pill (DESIGN §7.18).
     private func setAutoOpen(_ key: String, _ on: Bool) {
-        switch key {
-        case "autoOpenOnInput": config.autoOpenOnInput = on
-        case "autoOpenOnDone": config.autoOpenOnDone = on
-        case "autoOpenFocus": config.autoOpenFocus = on
-        default: return
-        }
-        appLog("auto-open: \(key) = \(on)")
-        if !Config.saveValue(on, forKey: key) {
-            appLog("auto-open: \(key) not saved; it applies until Poppy quits")
-        }
+        manager.setAutoOpen(key, on)
     }
 
     private func setShowUsage(_ on: Bool) {
-        guard on != config.showUsage else { return }
-        config.showUsage = on
-        appLog("usage: showUsage = \(config.showUsage)")
+        manager.setShowUsage(on)
+    }
+
+    /// Show Usage changed (for every pill).
+    func usageEnabledChanged() {
         usage.setEnabled(config.showUsage)
-        if !Config.saveValue(config.showUsage, forKey: "showUsage") {
-            appLog("usage: showUsage not saved; it applies until Poppy quits")
-        }
     }
 
     // MARK: - Settings page (DESIGN §7.9)
@@ -1618,7 +1761,7 @@ final class PanelController: NSObject {
 
     /// The page's controls from the current settings (also after a change was refused).
     /// The agent and directory lists are the same as the menu's (DESIGN §9.5, §9.8).
-    private func refreshSettings() {
+    func refreshSettings() {
         menuAgents = agents.profiles(for: agentConfig)
         agents.refreshIfNeeded(menuAgents)
         let agentChoices = menuAgents.map { profile in
@@ -1640,18 +1783,13 @@ final class PanelController: NSObject {
             showUsage: config.showUsage, statusHooks: config.statusHooks,
             autoOpenOnInput: config.autoOpenOnInput, autoOpenOnDone: config.autoOpenOnDone,
             autoOpenFocus: config.autoOpenFocus,
-            hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true))
+            hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true,
+            hotkeyTargets: HotkeyTarget.allCases.map(\.title),
+            hotkeyTarget: HotkeyTarget.allCases.firstIndex(of: config.hotkeyTarget) ?? 0))
     }
 
-    /// Saves `statusHooks`; the running agent keeps its hooks until it restarts (DESIGN §9.6).
     private func setStatusHooks(_ on: Bool) {
-        guard on != config.statusHooks else { return }
-        config.statusHooks = on
-        sessions.forEach { $0.setStatusHooks(on) }
-        appLog("status hooks: statusHooks = \(on) (from the next agent start)")
-        if !Config.saveValue(on, forKey: "statusHooks") {
-            appLog("status hooks: statusHooks not saved; it applies until Poppy quits")
-        }
+        manager.setStatusHooks(on)
     }
 
     // MARK: - Attachments (DESIGN §9.10)
@@ -1714,18 +1852,6 @@ final class PanelController: NSObject {
     private static func anchor(for pill: NSRect) -> Anchor {
         let visible = screen(for: pill).visibleFrame
         return Anchor(right: pill.midX > visible.midX, top: pill.midY > visible.midY)
-    }
-
-    /// Saved origin if it's still on some screen (clamped), else the default position.
-    private static func initialPillFrame(from state: PanelState, size pillSize: NSSize) -> NSRect {
-        if let saved = state.pillOrigin {
-            let rect = NSRect(x: saved.x, y: saved.y, width: pillSize.width, height: pillSize.height)
-            if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(rect) }) {
-                return clamp(rect, in: screen(for: rect))
-            }
-        }
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        return NSRect(origin: defaultPillOrigin(on: screen, size: pillSize), size: pillSize)
     }
 
     static func defaultPillOrigin(on screen: NSScreen, size pillSize: NSSize) -> NSPoint {
