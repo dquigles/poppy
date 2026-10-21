@@ -38,6 +38,7 @@ Workflow per milestone:
 | M24 | Sessions and the sidebar in one pill: ＋ / ⌘T / New Session (with a ⌄ menu for another agent or folder), ⌘1–9, ⌘W / × / Close Session with a question for busy sessions, rename, auto-numbered names; the sidebar with 2+ sessions (drag-resizable, snaps to a logo rail, scrolls only when needed); the pill shows the most urgent status and a badge of sessions that need you; per-session done seen and Auto-Open; app-wide status-file names; Poppy Dev debug hook and `scripts/test-sessions.py` (§7.17, §12.2) | done |
 | M25 | Several pills: New Pill, one open at a time, placement without overlap, "Hotkey opens" (most recent / most urgent / each in turn), menus acting on their pill and the menu bar's pill list, Auto-Open across pills, `poppy` reuses a session in the folder (`--new`, `--new-pill`), closing the last session removes the pill, the layout saved and restored with fresh agents (old `state.json` migrates); `scripts/test-pills.py` (§7.18, §8.2, §9.9, §11) | done |
 | M26 | Dragging between pills: row reorder, a row out to a new pill or onto a pill, a pill onto a pill or an open panel, sessions keep running; Liquid Glass effects (merging glass, a row chip turning into a pill, the pill's content fading, the sidebar sliding in with an empty slot that the dropped pill snaps into); `scripts/test-drag.py` (§7.19) | done |
+| M27 | More settings: keep open (fold setting, per-pill pin, fold button, Collapse in the menu), fade when not focused, hide the pill (menu bar Show and status-tinted icon), terminal font / size (⌘+/⌘–/⌘0) / theme (Dark, Light, Follow system) / opacity / cursor, copy on select, confirm before quitting, launch at login; Panel, Terminal and General settings cards (§4, §6.3, §7.9, §7.20, §7.21, §9.1) | done |
 
 ## Decisions
 - Window level `.statusBar` (fallback `.floating`); `collectionBehavior` includes canJoinAllSpaces + fullScreenAuxiliary.
@@ -180,4 +181,14 @@ Workflow per milestone:
   - **A pill onto an open panel** (the user's idea): drop target, then a sidebar preview with an empty slot (sliding in for a one-session panel, without reflowing the terminal) and a chip snapping into the slot.
 
   Testing: `scripts/test-drag.py` (7 tests), `test-sessions.py` (20) and `test-pills.py` (16) pass; Poppy Dev-only debug ops `drag`, `dropRow`, `dropPill`, `moveRow` and `liquidHold` (DESIGN §12.2). The user tested every drag and approved the look ("a little worse" than with the panel's neck, accepted).
+- M27 (2026-10-21): more settings (the plan was docs/MORE-SETTINGS.md, a local file outside the repo; its content is now in DESIGN §4, §6.3, §7.9, §7.20, §7.21, §9.1). Done as one milestone, not split. Claude's calls, open to change:
+  - **Fade layer:** the glass view inside `GlassBackgroundView` (glass and content together); the reveal keeps the outer alpha, so a reveal while faded ends faded.
+  - **Header:** pin, then fold, at the right edge; Done replaces both on the settings page. Nothing on the left (no sidebar toggle since M24). **Collapse** at the top of the menu while expanded.
+  - **Pinned** skips Auto-Open's fold after you answer; folding off doesn't.
+  - **`cursorBlink` defaults to true**, not the plan's false: the plan meant "match SwiftTerm's default", which is a blinking block.
+  - **Follow system** follows the app's appearance, not the view's (the glass changes its content's look). The light palette's ANSI colors are darkened for a light background.
+  - **Settings order:** Panel, Terminal, General after Auto-Open; Advanced stays last. Sliders apply while dragging and save on release. The font list is scanned once per launch.
+  - **Quit question:** a standalone alert at `.statusBar + 1`, Poppy active only while it shows, activation given back on Cancel; `kAEQuitReason` (logout, restart, shutdown) never waits.
+  - **Hidden pills** are never drop targets; a row dragged out to a new pill while Hide pill is on stays visible until it's opened and folded once. Launch at login is also disabled without an app bundle.
+  Testing: `test-sessions.py` (20), `test-pills.py` (16) and `test-drag.py` (7) pass; new Poppy Dev debug ops `probe` (offscreen layout render, used to fix the cards at the minimum width), `pin`, `setting`. The user tested it in Poppy Dev ("all good").
 - Later (from the multi-session plan, not in M24–M26): git worktrees from ＋ (branch naming and cleanup to decide), resuming conversations on relaunch or restart (`claude --continue`, `codex resume`), the model name in rows, several panels open at once.

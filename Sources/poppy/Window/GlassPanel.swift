@@ -67,6 +67,11 @@ final class GlassPanel: NSPanel {
     var onNewSession: (() -> Void)?
     var onCloseSession: (() -> Void)?
     var onSelectSession: ((Int) -> Void)?
+    /// ⌘+ / ⌘= (1), ⌘– (-1) and ⌘0 (0, reset): the terminal font size (DESIGN §9.1).
+    var onZoom: ((Int) -> Void)?
+
+    /// ⌘+ is ⌘⇧= on most layouts, so Shift is allowed for these.
+    private static let zoomSteps: [String: Int] = ["=": 1, "+": 1, "-": -1, "0": 0]
 
     private static let settingsCloseKeyCodes: Set<UInt16> = [53, 36, 76]  // Esc, Return, keypad Enter
 
@@ -161,7 +166,13 @@ final class GlassPanel: NSPanel {
             onCloseSettings?()
             return true
         }
-        guard event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command] else {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        if modifiers == [.command] || modifiers == [.command, .shift],
+           let step = Self.zoomSteps[event.charactersIgnoringModifiers ?? ""] {
+            onZoom?(step)
+            return true
+        }
+        guard modifiers == [.command] else {
             return super.performKeyEquivalent(with: event)
         }
         let action: Selector

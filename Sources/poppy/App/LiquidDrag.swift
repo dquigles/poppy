@@ -96,7 +96,7 @@ final class LiquidDrag {
     }
 
     private static func onScreen(_ pill: PanelController, _ screen: NSScreen) -> Bool {
-        PanelController.screenNumber(PanelController.screen(for: pill.panel.frame)) == PanelController.screenNumber(screen)
+        !pill.isPillHidden && PanelController.screenNumber(PanelController.screen(for: pill.panel.frame)) == PanelController.screenNumber(screen)
     }
 
     private static func distance(_ a: NSRect, _ b: NSRect) -> CGFloat {

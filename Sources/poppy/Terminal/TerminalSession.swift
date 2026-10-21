@@ -78,6 +78,29 @@ final class TerminalSession {
         appLog("agent: \(spec.executable) \(spec.args.joined(separator: " ")) in \(spec.currentDirectory)")
     }
 
+    /// The terminal's look and copy on select, from the global settings, applied to the
+    /// running view now (DESIGN §9.1).
+    func setLook(from settings: Config) {
+        let previous = TerminalLook(config)
+        config.terminalFont = settings.terminalFont
+        config.terminalFontSize = settings.terminalFontSize
+        config.terminalTheme = settings.terminalTheme
+        config.terminalOpacity = settings.terminalOpacity
+        config.cursorStyle = settings.cursorStyle
+        config.cursorBlink = settings.cursorBlink
+        config.copyOnSelect = settings.copyOnSelect
+        let look = TerminalLook(config)
+        if look != previous, let currentView { look.apply(to: currentView, previous: previous) }
+    }
+
+    var copyOnSelect: Bool { config.copyOnSelect }
+
+    /// Follow system: macOS switched between light and dark (DESIGN §9.1).
+    func appearanceChanged() {
+        let look = TerminalLook(config)
+        if look.theme == .system, let currentView { look.apply(to: currentView, previous: look) }
+    }
+
     /// Status hooks on or off from the next start (`restart()` recomputes the spec, DESIGN §9.6).
     func setStatusHooks(_ on: Bool) {
         config.statusHooks = on
@@ -159,10 +182,7 @@ final class TerminalSession {
         view.autoresizingMask = [.width, .height]
         view.session = self
         view.processDelegate = self
-        view.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        view.nativeForegroundColor = NSColor(white: 0.92, alpha: 1)
-        view.nativeBackgroundColor = NSColor(white: 0.05, alpha: 1)
-        view.backgroundOpacity = 0.80
+        TerminalLook(config).apply(to: view)  // font, colors, opacity, cursor (DESIGN §9.1)
         // SwiftTerm's scroller is private; hide its view (trackpad scrollback still works).
         // With it hidden SwiftTerm reserves no width, and setFrameSize re-fits the columns
         // before the process starts.
@@ -321,6 +341,17 @@ extension TerminalSession: @preconcurrency LocalProcessTerminalViewDelegate {
 /// Terminal view that swallows input after the agent exits and restarts on Enter.
 final class PoppyTerminalView: LocalProcessTerminalView {
     weak var session: TerminalSession?
+    /// The colors installed last, so Follow system redraws only on a real switch.
+    var appliedPalette: TerminalPalette?
+
+    /// Copy on select (DESIGN §9.1): a mouse selection that just ended is copied, as ⌘C
+    /// does. A plain click clears the selection, so it copies nothing.
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        guard session?.copyOnSelect == true, selection.active,
+              !selection.getSelectedText().isEmpty else { return }
+        copy(self)
+    }
 
     /// Pastes `text` as if typed, bracketed when the app asked for it (so an agent treats
     /// a path as one paste, e.g. Claude attaching an image, DESIGN §9.10).

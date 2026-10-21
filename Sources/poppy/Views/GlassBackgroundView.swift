@@ -53,6 +53,39 @@ final class GlassBackgroundView: NSView {
         didSet { applyCornerRadius() }
     }
 
+    /// Fade when not focused (DESIGN §7.20): the glass with everything in it, one layer
+    /// inside this view, whose own alpha belongs to the Space-swipe reveal (§7.16). So a
+    /// reveal while faded ends at the faded opacity.
+    func setFade(_ alpha: CGFloat, animated: Bool, completion: (@MainActor () -> Void)? = nil) {
+        guard backing.alphaValue != alpha else { return }
+        guard animated else {
+            backing.alphaValue = alpha
+            completion?()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            backing.animator().alphaValue = alpha
+        }, completionHandler: {
+            MainActor.assumeIsolated { completion?() }
+        })
+    }
+
+    var fadeAlpha: CGFloat { backing.alphaValue }
+
+    /// The mouse entered or left (tracked while Poppy isn't active, for the fade).
+    var onHoverChange: (() -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHoverChange?() }
+    override func mouseExited(with event: NSEvent) { onHoverChange?() }
+
     /// Either an NSGlassEffectView (macOS 26+) or an NSVisualEffectView.
     private let backing: NSView
 

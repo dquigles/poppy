@@ -26,6 +26,28 @@ struct SettingsModel {
     /// "Hotkey opens" (DESIGN §11): the choices' titles and the current one.
     var hotkeyTargets: [String]
     var hotkeyTarget: Int
+    /// Panel, Terminal and General (M27): the global settings as saved.
+    var settings: Config
+    var launchAtLogin: LaunchAtLogin.State
+}
+
+/// A change on the Panel, Terminal or General cards (DESIGN §7.9). `done` is false while a
+/// slider is still being dragged (applied live, saved at the end).
+enum SettingsChange {
+    case foldOnClickOutside(Bool)
+    case fadeWhenInactive(Bool)
+    case inactiveOpacity(Double, done: Bool)
+    case hidePill(Bool)
+    case terminalFont(String?)
+    case terminalFontSize(Double)
+    case terminalTheme(TerminalTheme)
+    case terminalOpacity(Double, done: Bool)
+    case cursorStyle(CursorShape)
+    case cursorBlink(Bool)
+    case copyOnSelect(Bool)
+    case confirmQuit(Bool)
+    case launchAtLogin(Bool)
+    case openLoginItems
 }
 
 /// The settings page inside the expanded panel, in place of the terminal (DESIGN §7.9),
@@ -46,6 +68,7 @@ final class SettingsView: NSView {
     var onAutoOpen: ((_ key: String, _ on: Bool) -> Void)?
     var onHotkeyTarget: ((Int) -> Void)?
     var onEditConfig: (() -> Void)?
+    var onChange: ((SettingsChange) -> Void)?
 
     let hotkeyField = HotkeyField()
     private let scrollView = NSScrollView()
@@ -61,6 +84,27 @@ final class SettingsView: NSView {
     private let focusSwitch = FirstMouseSwitch()
     private let autoOpenNote = SettingsLabel.description("")
     private let editConfigButton = FirstMouseButton(title: "Edit config.json…", target: nil, action: nil)
+    // Panel
+    private let foldSwitch = FirstMouseSwitch()
+    private let fadeSwitch = FirstMouseSwitch()
+    private let fadeSlider = PercentSlider(range: Config.inactiveOpacityRange)
+    private let hidePillSwitch = FirstMouseSwitch()
+    private var fadeSliderTitle: NSTextField!
+    // Terminal
+    private let fontPopUp = FirstMousePopUpButton()
+    private let sizeStepper = FirstMouseStepper()
+    private let sizeLabel = NSTextField(labelWithString: "")
+    private let themePopUp = FirstMousePopUpButton()
+    private let opacitySlider = PercentSlider(range: Config.terminalOpacityRange)
+    private let cursorPopUp = FirstMousePopUpButton()
+    private let blinkCheckbox = FirstMouseButton(checkboxWithTitle: "Blink", target: nil, action: nil)
+    private let copySwitch = FirstMouseSwitch()
+    // General
+    private let loginSwitch = FirstMouseSwitch()
+    private let loginNote = SettingsLabel.description("")
+    private let loginItemsButton = FirstMouseButton(title: "Open Login Items", target: nil, action: nil)
+    private let confirmQuitSwitch = FirstMouseSwitch()
+    private var loginTitle: NSTextField!
     /// Titles of rows whose control can be disabled, dimmed with it.
     private var onInputTitle: NSTextField!
     private var onDoneTitle: NSTextField!
@@ -89,6 +133,41 @@ final class SettingsView: NSView {
         editConfigButton.bezelStyle = .push
         editConfigButton.target = self
         editConfigButton.action = #selector(editConfig)
+        for control in [foldSwitch, fadeSwitch, hidePillSwitch, copySwitch, loginSwitch, confirmQuitSwitch] {
+            control.controlSize = .small
+            control.target = self
+            control.action = #selector(switchChanged(_:))
+        }
+        for slider in [fadeSlider, opacitySlider] {
+            slider.slider.target = self
+            slider.slider.action = #selector(sliderChanged(_:))
+        }
+        fontPopUp.target = self
+        fontPopUp.action = #selector(fontChosen)
+        fontPopUp.autoenablesItems = false
+        sizeStepper.minValue = Config.fontSizeRange.lowerBound
+        sizeStepper.maxValue = Config.fontSizeRange.upperBound
+        sizeStepper.increment = 1
+        sizeStepper.valueWraps = false
+        sizeStepper.target = self
+        sizeStepper.action = #selector(sizeChanged)
+        sizeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        sizeLabel.alignment = .right
+        sizeLabel.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        themePopUp.addItems(withTitles: TerminalTheme.allCases.map(\.title))
+        themePopUp.target = self
+        themePopUp.action = #selector(themeChosen)
+        cursorPopUp.addItems(withTitles: CursorShape.allCases.map(\.title))
+        cursorPopUp.target = self
+        cursorPopUp.action = #selector(cursorChosen)
+        blinkCheckbox.setContentHuggingPriority(.required, for: .horizontal)
+        cursorPopUp.setContentHuggingPriority(.required, for: .horizontal)
+        blinkCheckbox.target = self
+        blinkCheckbox.action = #selector(blinkChanged)
+        loginItemsButton.bezelStyle = .push
+        loginItemsButton.controlSize = .small
+        loginItemsButton.target = self
+        loginItemsButton.action = #selector(openLoginItems)
         hotkeyField.messageLabel.stringValue = "Click, then press the new shortcut."
 
         let restartNote = "Changing it restarts the agent."
@@ -112,28 +191,58 @@ final class SettingsView: NSView {
         onDoneTitle = onDone.title
         focusTitle = focus.title
         let autoOpen = Self.group([onInput.view, onDone.view, focus.view])
+        let fadeOpacity = Self.row("Faded opacity", nil as String?, fadeSlider)
+        fadeSliderTitle = fadeOpacity.title
+        let panelGroup = Self.group([
+            Self.row("Fold when clicking outside", "Off, the panel stays open until you fold it. "
+                     + "Each panel's pin keeps it open too.", foldSwitch).view,
+            Self.row("Fade when not focused", "While you're in another app; full again on hover.", fadeSwitch).view,
+            fadeOpacity.view,
+            Self.row("Hide pill when collapsed", "Open it from the menu bar, the hotkey or Auto-Open.",
+                     hidePillSwitch).view,
+        ])
+        let size = NSStackView(views: [sizeLabel, sizeStepper])
+        size.spacing = 4
+        let cursor = NSStackView(views: [cursorPopUp, blinkCheckbox])
+        cursor.spacing = 12
+        let terminalGroup = Self.group([
+            Self.row("Font", nil as String?, fontPopUp).view,
+            Self.row("Size", "⌘+ and ⌘– in the terminal, ⌘0 to reset.", size).view,
+            Self.row("Theme", nil as String?, themePopUp).view,
+            Self.row("Background", "Behind the text. At 100 % it's solid.", opacitySlider).view,
+            Self.row("Cursor", "Agents can change it.", cursor).view,
+            Self.row("Copy on select", "Selecting text with the mouse copies it.", copySwitch).view,
+        ])
+        let loginControls = NSStackView(views: [loginItemsButton, loginSwitch])
+        loginControls.spacing = 10
+        let login = Self.row("Launch at login", loginNote, loginControls)
+        loginTitle = login.title
+        let generalGroup = Self.group([
+            login.view,
+            Self.row("Confirm before quitting", "Asks while an agent is working or waiting.", confirmQuitSwitch).view,
+        ])
         let advanced = Self.group([
             Self.row("Custom agents and other options", "In config.json, read when Poppy starts.",
                      editConfigButton).view,
         ])
 
-        let content = NSStackView(views: [
-            general,
-            Self.sectionHeader("Pill"), pill,
-            Self.sectionHeader("Auto-Open", autoOpenNote), autoOpen,
-            Self.sectionHeader("Advanced"), advanced,
-        ])
+        let headers = [
+            Self.sectionHeader("Pill"), Self.sectionHeader("Auto-Open", autoOpenNote), Self.sectionHeader("Panel"),
+            Self.sectionHeader("Terminal"), Self.sectionHeader("General"), Self.sectionHeader("Advanced"),
+        ]
+        let groups = [pill, autoOpen, panelGroup, terminalGroup, generalGroup, advanced]
+        let content = NSStackView(views: [general] + zip(headers, groups).flatMap { [$0, $1] })
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 20
-        for header in [content.arrangedSubviews[1], content.arrangedSubviews[3], content.arrangedSubviews[5]] {
+        for header in headers {
             content.setCustomSpacing(8, after: header)
         }
         content.translatesAutoresizingMaskIntoConstraints = false
         for view in content.arrangedSubviews {
             view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
-        for popUp in [agentPopUp, directoryPopUp, hotkeyTargetPopUp] {
+        for popUp in [agentPopUp, directoryPopUp, hotkeyTargetPopUp, fontPopUp] {
             popUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
             popUp.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
         }
@@ -174,15 +283,29 @@ final class SettingsView: NSView {
         onDoneSwitch.setAccessibilityLabel("Auto-Open when the agent is done")
         focusSwitch.setAccessibilityLabel("Auto-Open takes keyboard focus")
         hotkeyField.setAccessibilityLabel("Hotkey")
+        for (control, label) in [(foldSwitch, "Fold when clicking outside"), (fadeSwitch, "Fade when not focused"),
+                                 (fadeSlider.slider, "Faded opacity"), (hidePillSwitch, "Hide pill when collapsed"),
+                                 (fontPopUp, "Terminal font"), (sizeStepper, "Terminal font size"),
+                                 (themePopUp, "Terminal theme"), (opacitySlider.slider, "Terminal background opacity"),
+                                 (cursorPopUp, "Cursor"), (copySwitch, "Copy on select"),
+                                 (loginSwitch, "Launch at login"), (confirmQuitSwitch, "Confirm before quitting")] as [(NSView, String)] {
+            control.setAccessibilityLabel(label)
+        }
         linkKeyLoop()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// The page's scrolled content (Poppy Dev's snapshot, DESIGN §12.2).
+    var documentView: NSView { scrollView.documentView ?? scrollView }
+
     /// Tab order with Full Keyboard Access on (rebuilt when the pill size radios change).
     private func linkKeyLoop() {
         let loop: [NSView] = [agentPopUp, directoryPopUp, hotkeyField, hotkeyTargetPopUp] + pillRadios
-            + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch, editConfigButton]
+            + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch,
+               foldSwitch, fadeSwitch, fadeSlider.slider, hidePillSwitch,
+               fontPopUp, sizeStepper, themePopUp, opacitySlider.slider, cursorPopUp, blinkCheckbox, copySwitch,
+               loginItemsButton, loginSwitch, confirmQuitSwitch, editConfigButton]
         nextKeyView = loop.first
         for (view, next) in zip(loop, loop.dropFirst()) { view.nextKeyView = next }
         loop.last?.nextKeyView = self
@@ -216,6 +339,7 @@ final class SettingsView: NSView {
         }
         control.setContentHuggingPriority(.required, for: .horizontal)
         control.setContentCompressionResistancePriority(.required, for: .horizontal)
+        (control as? NSStackView)?.setHuggingPriority(.required, for: .horizontal)  // its own, not the view's
         // The text fills the space left of the control, so a description wraps at that
         // width (and keeps it when its text changes) instead of shrinking to a word.
         let fillText = text.trailingAnchor.constraint(equalTo: control.leadingAnchor, constant: -16)
@@ -342,6 +466,84 @@ final class SettingsView: NSView {
             hotkeyTargetPopUp.addItems(withTitles: model.hotkeyTargets)
         }
         hotkeyTargetPopUp.selectItem(at: model.hotkeyTarget)
+
+        let settings = model.settings
+        foldSwitch.state = settings.foldOnClickOutside ? .on : .off
+        fadeSwitch.state = settings.fadeWhenInactive ? .on : .off
+        fadeSlider.value = settings.inactiveOpacity
+        fadeSlider.isEnabled = settings.fadeWhenInactive
+        fadeSliderTitle.textColor = settings.fadeWhenInactive ? .labelColor : .tertiaryLabelColor
+        hidePillSwitch.state = settings.hidePill ? .on : .off
+        updateFonts(selected: settings.terminalFont)
+        sizeStepper.doubleValue = settings.terminalFontSize
+        sizeLabel.stringValue = "\(Int(settings.terminalFontSize)) pt"
+        themePopUp.selectItem(at: TerminalTheme.allCases.firstIndex(of: settings.terminalTheme) ?? 0)
+        opacitySlider.value = settings.terminalOpacity
+        cursorPopUp.selectItem(at: CursorShape.allCases.firstIndex(of: settings.cursorStyle) ?? 0)
+        blinkCheckbox.state = settings.cursorBlink ? .on : .off
+        copySwitch.state = settings.copyOnSelect ? .on : .off
+        confirmQuitSwitch.state = settings.confirmQuit ? .on : .off
+
+        let login = model.launchAtLogin
+        loginSwitch.state = login.isOn ? .on : .off
+        loginSwitch.isEnabled = login.canChange
+        loginTitle.textColor = login.canChange ? .labelColor : .tertiaryLabelColor
+        loginNote.stringValue = login.note ?? ""
+        loginNote.isHidden = login.note == nil
+        loginItemsButton.isHidden = login != .requiresApproval
+    }
+
+    /// System Mono, then the installed fixed-pitch fonts by family (DESIGN §9.1). A saved
+    /// font that isn't in the list (gone, or not fixed-pitch) shows as System Mono, which
+    /// is what the terminal falls back to if it's gone.
+    private func updateFonts(selected: String?) {
+        let fonts = Self.fixedPitchFonts()
+        if fontNames != fonts.flatMap({ $0.faces.map(\.name) }) {
+            fontNames = fonts.flatMap { $0.faces.map(\.name) }
+            fontPopUp.removeAllItems()
+            fontPopUp.addItem(withTitle: "System Mono")
+            for family in fonts {
+                fontPopUp.menu?.addItem(.sectionHeader(title: family.family))
+                for face in family.faces {
+                    let item = NSMenuItem(title: face.title, action: nil, keyEquivalent: "")
+                    item.representedObject = face.name
+                    item.indentationLevel = 1
+                    fontPopUp.menu?.addItem(item)
+                }
+            }
+        }
+        let index = selected.map { fontPopUp.indexOfItem(withRepresentedObject: $0) } ?? 0
+        fontPopUp.selectItem(at: index >= 0 ? index : 0)
+    }
+
+    private var fontNames: [String]?
+
+    /// Families with their fixed-pitch faces: (PostScript name, "Family Face"), "Regular"
+    /// shown as the family alone.
+    private static func fixedPitchFonts() -> [(family: String, faces: [(name: String, title: String)])] {
+        if let cachedFonts { return cachedFonts }
+        let fonts = scanFixedPitchFonts()
+        cachedFonts = fonts
+        return fonts
+    }
+
+    /// Scanned once (fonts installed later show after a relaunch).
+    private static var cachedFonts: [(family: String, faces: [(name: String, title: String)])]?
+
+    private static func scanFixedPitchFonts() -> [(family: String, faces: [(name: String, title: String)])] {
+        let manager = NSFontManager.shared
+        let fixed = Set(manager.availableFontNames(with: .fixedPitchFontMask) ?? [])
+        var result: [(family: String, faces: [(name: String, title: String)])] = []
+        for family in manager.availableFontFamilies.sorted() where !family.hasPrefix(".") {
+            var faces: [(name: String, title: String)] = []
+            for member in manager.availableMembers(ofFontFamily: family) ?? [] {
+                guard let name = member.first as? String, fixed.contains(name) else { continue }
+                let face = member.count > 1 ? member[1] as? String ?? "" : ""
+                faces.append((name, face.isEmpty || face == "Regular" ? family : "\(family) \(face)"))
+            }
+            if !faces.isEmpty { result.append((family, faces)) }
+        }
+        return result
     }
 
     // MARK: Keyboard
@@ -381,6 +583,51 @@ final class SettingsView: NSView {
     @objc private func hotkeyTargetChosen() {
         onHotkeyTarget?(hotkeyTargetPopUp.indexOfSelectedItem)
     }
+
+    @objc private func switchChanged(_ sender: NSSwitch) {
+        let on = sender.state == .on
+        switch sender {
+        case foldSwitch: onChange?(.foldOnClickOutside(on))
+        case fadeSwitch: onChange?(.fadeWhenInactive(on))
+        case hidePillSwitch: onChange?(.hidePill(on))
+        case copySwitch: onChange?(.copyOnSelect(on))
+        case loginSwitch: onChange?(.launchAtLogin(on))
+        default: onChange?(.confirmQuit(on))
+        }
+    }
+
+    /// Applied while dragging; `done` (saved) once the mouse is up or the keyboard moved it.
+    @objc private func sliderChanged(_ sender: NSSlider) {
+        let type = NSApp.currentEvent?.type
+        let done = type != .leftMouseDragged && type != .leftMouseDown
+        fadeSlider.showValue()
+        opacitySlider.showValue()
+        if sender === fadeSlider.slider {
+            onChange?(.inactiveOpacity(fadeSlider.value, done: done))
+        } else {
+            onChange?(.terminalOpacity(opacitySlider.value, done: done))
+        }
+    }
+
+    @objc private func fontChosen() {
+        onChange?(.terminalFont(fontPopUp.selectedItem?.representedObject as? String))
+    }
+
+    @objc private func sizeChanged() {
+        sizeLabel.stringValue = "\(Int(sizeStepper.doubleValue)) pt"
+        onChange?(.terminalFontSize(sizeStepper.doubleValue))
+    }
+
+    @objc private func themeChosen() {
+        onChange?(.terminalTheme(TerminalTheme.allCases[max(themePopUp.indexOfSelectedItem, 0)]))
+    }
+
+    @objc private func cursorChosen() {
+        onChange?(.cursorStyle(CursorShape.allCases[max(cursorPopUp.indexOfSelectedItem, 0)]))
+    }
+
+    @objc private func blinkChanged() { onChange?(.cursorBlink(blinkCheckbox.state == .on)) }
+    @objc private func openLoginItems() { onChange?(.openLoginItems) }
 
     @objc private func autoOpenChanged(_ sender: NSSwitch) {
         let key = switch sender {
@@ -584,6 +831,57 @@ final class FirstMousePopUpButton: NSPopUpButton {
 
 final class FirstMouseSwitch: NSSwitch {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+final class FirstMouseStepper: NSStepper {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+final class FirstMouseSlider: NSSlider {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// A slider with its value as a percentage beside it, in 5 % steps.
+final class PercentSlider: NSStackView {
+    let slider = FirstMouseSlider()
+    private let label = NSTextField(labelWithString: "")
+
+    init(range: ClosedRange<Double>) {
+        super.init(frame: .zero)
+        slider.minValue = range.lowerBound
+        slider.maxValue = range.upperBound
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        addArrangedSubview(slider)
+        addArrangedSubview(label)
+        spacing = 6
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    var value: Double {
+        get { (slider.doubleValue * 20).rounded() / 20 }
+        set {
+            slider.doubleValue = newValue
+            label.stringValue = "\(Int((newValue * 100).rounded())) %"
+        }
+    }
+
+    var isEnabled: Bool {
+        get { slider.isEnabled }
+        set {
+            slider.isEnabled = newValue
+            label.textColor = newValue ? .secondaryLabelColor : .tertiaryLabelColor
+        }
+    }
+
+    /// The label follows while dragging (the page isn't refreshed until the drag ends).
+    func showValue() { label.stringValue = "\(Int((value * 100).rounded())) %" }
 }
 
 /// Top-to-bottom document for the settings scroll view.

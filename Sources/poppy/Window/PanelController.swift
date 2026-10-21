@@ -57,6 +57,10 @@ final class PanelController: NSObject {
     private var afterExpand: (() -> Void)?
     /// The session whose name is being edited.
     private var renamingSession: UUID?
+    /// Pinned: a click outside never folds this panel (DESIGN §6.3). Saved with the layout.
+    private var pinned = false
+    /// Hide pill when collapsed: ordered out until it opens again (DESIGN §7.21).
+    private(set) var isPillHidden = false
 
     static func directoryName(_ path: String) -> String {
         let short = Config.abbreviate(path)
@@ -130,6 +134,7 @@ final class PanelController: NSObject {
             NSSize(width: max($0.width, ExpandedView.minSize.width), height: max($0.height, ExpandedView.minSize.height))
         } ?? ExpandedView.defaultSize
         sidebarRail = saved.sidebarCollapsed ?? false
+        pinned = saved.pinned ?? false
         if let width = saved.sidebarWidth {
             sidebarWidth = max(SidebarView.minWidth, min(CGFloat(width), SidebarView.maxWidth))
         }
@@ -208,6 +213,11 @@ final class PanelController: NSObject {
         }
         settings.hotkeyField.onEnd = { [weak self] in self?.hotKeys?.endRecording() }
         expandedView.header.onDone = { [weak self] in self?.closeSettings() }
+        expandedView.header.onPin = { [weak self] in self?.togglePin() }
+        expandedView.header.onFold = { [weak self] in self?.collapse() }
+        settings.onChange = { [weak self] change in self?.manager.applySetting(change) }
+        panel.onZoom = { [weak self] step in self?.manager.zoomTerminal(step) }
+        glass.onHoverChange = { [weak self] in self?.updateFade() }
         settings.onAutoOpen = { [weak self] key, on in
             self?.setAutoOpen(key, on)
             self?.refreshSettings()
@@ -244,9 +254,17 @@ final class PanelController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelOcclusionDidChange),
             name: NSWindow.didChangeOcclusionStateNotification, object: panel)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(panelDidResignKey),
+            name: NSWindow.didResignKeyNotification, object: panel)
 
         selectionChanged()
-        panel.orderFrontRegardless()
+        updatePinButton()
+        if manager.config.hidePill, adopting.isEmpty {
+            isPillHidden = true  // shown when it opens (DESIGN §7.21)
+        } else {
+            panel.orderFrontRegardless()
+        }
         panel.refreshShadow()
         usage.onChange = { [weak self] report, reason in self?.usageChanged(report, reason: reason) }
         usage.start()
@@ -289,6 +307,7 @@ final class PanelController: NSObject {
             appLog("expand: another pill can't fold right now")
             return
         }
+        showHiddenPill()
         isAnimating = true
         state = .expanded
         autoOpenedFor = nil
@@ -342,7 +361,7 @@ final class PanelController: NSObject {
                 if autoOpenedFor == .waiting, let opener = sessions.first(where: { $0.id == autoOpenedSession }),
                    opener.status != .waiting {
                     autoOpenedFor = nil
-                    if opener.status == .working, opener === session { collapse() }
+                    if opener.status == .working, opener === session, !pinned { collapse() }
                 }
             }
         }
@@ -359,6 +378,7 @@ final class PanelController: NSObject {
         autoOpenedFor = nil
         removeClickOutsideMonitor()
         panel.setResizable(false)
+        updateFade()  // the pill never fades
 
         // Drop key status so the underlying app's window gets keyboard input again.
         panel.makeFirstResponder(nil)
@@ -375,6 +395,13 @@ final class PanelController: NSObject {
             glass.cornerRadius = pillCornerRadius
             panel.setTitledChrome(false)  // also refreshes the shadow
             pillView.isHidden = false
+            if config.hidePill {
+                // Gone instead of the pill (DESIGN §7.21).
+                pillView.alphaValue = 1
+                hidePill()
+                finishAnimation()
+                return
+            }
             fade(pillView, to: 1) { [weak self] in
                 self?.panel.refreshShadow()
                 self?.finishAnimation()
@@ -397,7 +424,8 @@ final class PanelController: NSObject {
         switch status {
         case .working:
             // Not after a "done" auto-open: the user is typing the next prompt in the panel.
-            if answered, state == .expanded, !isAnimating { collapse() }
+            // Pinned means "leave it open" (DESIGN §7.15).
+            if answered, state == .expanded, !isAnimating, !pinned { collapse() }
         case .waiting:
             if config.autoOpenOnInput { autoOpen(changed, for: .waiting) } else { appLog("auto-open: off for input") }
         case .done:
@@ -421,6 +449,11 @@ final class PanelController: NSObject {
         // During an expand the fade completion installs it; this covers an unfocused
         // auto-open that the user clicks into later.
         if state == .expanded, !isAnimating { installClickOutsideMonitor() }  // idempotent
+        updateFade()
+    }
+
+    @objc private func panelDidResignKey(_ notification: Notification) {
+        updateFade()
     }
 
     /// Retries an auto-open that had to wait, if the agent is still in that status.
@@ -584,6 +617,7 @@ final class PanelController: NSObject {
         SavedPill(origin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY),
                   expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height),
                   sidebarCollapsed: sidebarRail, sidebarWidth: Double(sidebarWidth), selected: selectedIndex,
+                  pinned: pinned ? true : nil,
                   sessions: sessions.map {
                       SavedSession(command: $0.command, cwd: Config.abbreviate($0.workingDirectory), name: $0.customName)
                   })
@@ -765,6 +799,7 @@ final class PanelController: NSObject {
         } + Array(repeating: SidebarItem.placeholder(), count: dropPreviewCount),
            selected: selectedIndex, canClose: canCloseSession,
            hidden: hiddenRowSession.flatMap { hidden in sessions.firstIndex { $0 === hidden } })
+        manager.updateMenuBarIcon()
     }
 
     /// The sidebar's width when it shows: the rail, or names at `sidebarWidth` (a panel
@@ -792,7 +827,7 @@ final class PanelController: NSObject {
     }
 
     /// waiting > working > done (unseen; seen is idle) > idle.
-    private static func urgency(_ status: AgentStatus) -> Int {
+    static func urgency(_ status: AgentStatus) -> Int {
         switch status {
         case .idle: 0
         case .done: 1
@@ -1230,9 +1265,71 @@ final class PanelController: NSObject {
             guard let key = command.key, let value = command.value else { return "needs key and value" }
             setAutoOpen(key, value)
         case "settings": if command.value ?? true { openSettings() } else { closeSettings() }
+        case "pin": togglePin()
+        case "setting":
+            // The Panel/Terminal/General cards: key, with value (switches) or width (numbers).
+            let on = command.value ?? false, number = command.width ?? 0
+            let change: SettingsChange? = switch command.key {
+            case "foldOnClickOutside": .foldOnClickOutside(on)
+            case "fadeWhenInactive": .fadeWhenInactive(on)
+            case "inactiveOpacity": .inactiveOpacity(number, done: true)
+            case "hidePill": .hidePill(on)
+            case "terminalFontSize": .terminalFontSize(number)
+            case "terminalOpacity": .terminalOpacity(number, done: true)
+            case "copyOnSelect": .copyOnSelect(on)
+            case "confirmQuit": .confirmQuit(on)
+            default: nil
+            }
+            guard let change else { return "unknown setting" }
+            manager.applySetting(change)
+        case "probe":
+            // A fresh settings page (name "settings") or header (else) at `width`, drawn
+            // offscreen over a plain window in light or dark (value: dark), to check layout.
+            guard let path = command.directory else { return "needs a path (directory)" }
+            let width = CGFloat(command.width ?? 480)
+            let view: NSView
+            if command.name == "settings" {
+                let page = SettingsView(frame: NSRect(x: 0, y: 0, width: width, height: 2400))
+                page.update(settingsModel)
+                view = page.documentView
+            } else {
+                let header = HeaderView(frame: NSRect(x: 0, y: 0, width: width, height: ExpandedView.headerHeight),
+                                        title: session.name + " with a long name to check truncation")
+                header.setPinned(pinned, shown: config.foldOnClickOutside)
+                view = header
+            }
+            let window = NSWindow(contentRect: NSRect(x: -4000, y: 0, width: width, height: 2400),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: command.value == true ? .darkAqua : .aqua)
+            window.isReleasedWhenClosed = false
+            let host = NSView(frame: window.contentLayoutRect)
+            window.contentView = host
+            host.addSubview(view)
+            view.frame.size.width = width
+            view.layoutSubtreeIfNeeded()
+            if command.name == "settings" {
+                view.widthAnchor.constraint(equalToConstant: width).isActive = true
+                view.layoutSubtreeIfNeeded()
+                view.frame.size = NSSize(width: width, height: view.fittingSize.height)
+            }
+            view.frame.origin = .zero
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return "no bitmap" }
+            let image = NSImage(size: view.bounds.size, flipped: false) { rect in
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    NSColor.windowBackgroundColor.setFill()
+                    rect.fill()
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    rep.draw(in: rect)
+                }
+                return true
+            }
+            guard let tiff = image.tiffRepresentation, let flat = NSBitmapImageRep(data: tiff),
+                  let png = flat.representation(using: .png, properties: [:]) else { return "no png" }
+            do { try png.write(to: URL(fileURLWithPath: path)) } catch { return "\(error)" }
         case "snapshot":
             guard let path = command.directory else { return "needs a path (directory)" }
-            let view = glass.contentView
+            // name "settings": the whole settings page, scrolled parts included.
+            let view = command.name == "settings" ? expandedView.settingsView.documentView : glass.contentView
             guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return "no bitmap" }
             view.cacheDisplay(in: view.bounds, to: rep)
             // Over the window color (the glass isn't drawn), in the panel's appearance.
@@ -1273,6 +1370,11 @@ final class PanelController: NSObject {
             "pill": ["status": pillView.shownStatus.rawValue, "badge": pillView.badgeCount,
                      "label": pillView.toolTip ?? ""],
             "autoOpenedFor": autoOpenedFor?.rawValue ?? "",
+            "pinned": pinned,
+            "pillHidden": isPillHidden,
+            "visible": panel.isVisible,
+            "fade": Double(glass.fadeAlpha),
+            "clickOutsideMonitor": clickOutsideMonitor != nil,
             "sessions": sessions.map { each -> [String: Any] in
                 [
                     "id": each.id.uuidString,
@@ -1290,6 +1392,72 @@ final class PanelController: NSObject {
         ]
     }
 
+    // MARK: - Keep open, fade, hidden pill (DESIGN §6.3, §7.20, §7.21)
+
+    /// A click outside folds the panel: the setting is on and this pill isn't pinned.
+    private var foldsOnClickOutside: Bool { config.foldOnClickOutside && !pinned }
+
+    private func togglePin() {
+        pinned.toggle()
+        appLog("pin: \(pinned ? "on" : "off")")
+        updatePinButton()
+        clickOutsideChanged()
+        saveState()
+    }
+
+    /// The pin is hidden while a click outside never folds anyway.
+    private func updatePinButton() {
+        expandedView.header.setPinned(pinned, shown: config.foldOnClickOutside)
+    }
+
+    /// The fold setting or the pin changed: the monitor follows (installed only once key,
+    /// as after an unfocused auto-open).
+    func clickOutsideChanged() {
+        updatePinButton()
+        if !foldsOnClickOutside {
+            removeClickOutsideMonitor()
+        } else if state == .expanded, !isAnimating, panel.isKeyWindow {
+            installClickOutsideMonitor()
+        }
+    }
+
+    /// Fade when not focused: the open panel, not key and not under the mouse, fades to
+    /// the set opacity; everything else is at full opacity.
+    func updateFade() {
+        let faded = config.fadeWhenInactive && state == .expanded && !isAnimating && !panel.isKeyWindow
+            && !NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)
+        glass.setFade(faded ? CGFloat(config.inactiveOpacity) : 1, animated: true) { [weak self] in
+            self?.panel.refreshShadow()  // the rim is the shadow; it follows the glass's alpha
+        }
+    }
+
+    /// Collapsed with Hide pill on: ordered out (only while collapsed and not animating).
+    private func hidePill() {
+        guard !isPillHidden else { return }
+        isPillHidden = true
+        panel.orderOut(nil)
+        appLog("pill: hidden")
+        manager.pillVisibilityChanged()
+    }
+
+    /// Back on screen as the pill, where it was (before opening, or the setting went off).
+    private func showHiddenPill() {
+        guard isPillHidden else { return }
+        isPillHidden = false
+        pillFrame = Self.clamp(pillFrame, in: Self.screen(for: pillFrame))
+        panel.setFrame(pillFrame, display: false)
+        panel.orderFrontRegardless()
+        panel.refreshShadow()
+        appLog("pill: shown")
+        manager.pillVisibilityChanged()
+    }
+
+    /// Hide pill changed: collapsed pills go or come back now.
+    func hidePillChanged() {
+        guard state == .collapsed, !isAnimating else { return }  // the collapse's end checks it
+        if config.hidePill { hidePill() } else { showHiddenPill() }
+    }
+
     // MARK: - Click outside (DESIGN §6.3)
 
     /// Global monitors see only events delivered to other apps (other windows, the
@@ -1297,7 +1465,7 @@ final class PanelController: NSObject {
     /// Mouse events need no Accessibility permission. Left clicks collapse on mouse-up,
     /// and not when released over the panel, so dragging a file in from Finder works.
     private func installClickOutsideMonitor() {
-        guard clickOutsideMonitor == nil else { return }
+        guard clickOutsideMonitor == nil, foldsOnClickOutside else { return }
         clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseUp, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
@@ -1311,13 +1479,14 @@ final class PanelController: NSObject {
     }
 
     private func clickedOutside() {
-        guard state == .expanded, !isAnimating,
+        guard state == .expanded, !isAnimating, foldsOnClickOutside,
               !NSMouseInRect(NSEvent.mouseLocation, panel.frame, false) else { return }
         collapse()
     }
 
     private func finishAnimation() {
         isAnimating = false
+        updateFade()
         if needsReclamp {
             needsReclamp = false
             reclamp()
@@ -1511,6 +1680,7 @@ final class PanelController: NSObject {
     // MARK: - Observers
 
     @objc private func activeSpaceDidChange(_ notification: Notification) {
+        guard !isPillHidden else { return }  // stays hidden (DESIGN §7.21)
         panel.orderFrontRegardless()
         if awaitingReveal, panel.occlusionState.contains(.visible) { reveal() }
     }
@@ -1701,6 +1871,15 @@ final class PanelController: NSObject {
     /// comes first, DESIGN §7.12).
     func populateMenu(_ menu: NSMenu, clear: Bool = true) {
         if clear { menu.removeAllItems() }
+
+        // With keep-open, a click outside may not fold it (DESIGN §6.3).
+        if state == .expanded {
+            let collapseItem = NSMenuItem(title: "Collapse", action: #selector(collapseFromMenu), keyEquivalent: "")
+            collapseItem.target = self
+            collapseItem.isEnabled = !isAnimating
+            menu.addItem(collapseItem)
+            menu.addItem(.separator())
+        }
 
         // Sessions (DESIGN §7.17). The ⌘ hints are handled by GlassPanel (§6.2).
         for (title, action, key) in [("New Session", #selector(newSessionFromMenu), "t"),
@@ -1983,6 +2162,10 @@ final class PanelController: NSObject {
     /// The page's controls from the current settings (also after a change was refused).
     /// The agent and directory lists are the same as the menu's (DESIGN §9.5, §9.8).
     func refreshSettings() {
+        expandedView.settingsView.update(settingsModel)
+    }
+
+    private var settingsModel: SettingsModel {
         menuAgents = agents.profiles(for: agentConfig)
         agents.refreshIfNeeded(menuAgents)
         let agentChoices = menuAgents.map { profile in
@@ -1996,7 +2179,7 @@ final class PanelController: NSObject {
             .filter { Self.isDirectory($0) }
             .prefix(Self.maxRecentDirectories)
         let preset = Self.pillPresets.firstIndex { $0.diameter == pillDiameter } ?? 0
-        expandedView.settingsView.update(SettingsModel(
+        return SettingsModel(
             agents: agentChoices,
             currentAgent: menuAgents.firstIndex { AgentCatalog.same($0.command, session.command) },
             directories: Array(directories),
@@ -2006,7 +2189,8 @@ final class PanelController: NSObject {
             autoOpenFocus: config.autoOpenFocus,
             hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true,
             hotkeyTargets: HotkeyTarget.allCases.map(\.title),
-            hotkeyTarget: HotkeyTarget.allCases.firstIndex(of: config.hotkeyTarget) ?? 0))
+            hotkeyTarget: HotkeyTarget.allCases.firstIndex(of: config.hotkeyTarget) ?? 0,
+            settings: config, launchAtLogin: LaunchAtLogin.state)
     }
 
     private func setStatusHooks(_ on: Bool) {
@@ -2048,6 +2232,10 @@ final class PanelController: NSObject {
 
     @objc private func restartAgent() {
         session.restart()
+    }
+
+    @objc private func collapseFromMenu() {
+        collapse()
     }
 
     @objc private func quit() {

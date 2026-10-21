@@ -36,6 +36,29 @@ nonisolated struct Config: Codable, Sendable {
     var showUsage = true
     /// Which pill the hotkey opens when there are several (DESIGN §11). Default recent.
     var hotkeyTarget = HotkeyTarget.recent
+    /// A click outside folds the panel (DESIGN §6.3); off, it stays open. Default true.
+    var foldOnClickOutside = true
+    /// The open panel fades to `inactiveOpacity` while it isn't focused (DESIGN §7.20).
+    var fadeWhenInactive = false
+    var inactiveOpacity = 0.5
+    /// No pill on screen while collapsed; opened from the menu bar (DESIGN §7.21).
+    var hidePill = false
+    /// The terminal's look (DESIGN §9.1); `terminalFont` is a PostScript name, nil for
+    /// the system's monospaced font.
+    var terminalFont: String?
+    var terminalFontSize = 13.0
+    var terminalTheme = TerminalTheme.dark
+    var terminalOpacity = 0.8
+    var cursorStyle = CursorShape.block
+    var cursorBlink = true
+    /// A finished mouse selection is copied (DESIGN §9.1). Default false.
+    var copyOnSelect = false
+    /// Quit asks first while an agent is working or waiting (DESIGN §4). Default true.
+    var confirmQuit = true
+
+    static let inactiveOpacityRange = 0.2...0.9
+    static let fontSizeRange = 9.0...24.0
+    static let terminalOpacityRange = 0.3...1.0
 
     init(command: String = Config.defaultCommand, cwd: String = Config.defaultCwd, hotkey: String = Config.defaultHotkey) {
         self.command = command
@@ -55,6 +78,21 @@ nonisolated struct Config: Codable, Sendable {
         autoOpenFocus = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenFocus)) ?? true
         showUsage = (try? c.decodeIfPresent(Bool.self, forKey: .showUsage)) ?? true
         hotkeyTarget = (try? c.decodeIfPresent(HotkeyTarget.self, forKey: .hotkeyTarget)) ?? .recent
+        foldOnClickOutside = (try? c.decodeIfPresent(Bool.self, forKey: .foldOnClickOutside)) ?? true
+        fadeWhenInactive = (try? c.decodeIfPresent(Bool.self, forKey: .fadeWhenInactive)) ?? false
+        inactiveOpacity = Self.clamped((try? c.decodeIfPresent(Double.self, forKey: .inactiveOpacity)) ?? 0.5,
+                                       to: Self.inactiveOpacityRange)
+        hidePill = (try? c.decodeIfPresent(Bool.self, forKey: .hidePill)) ?? false
+        terminalFont = (try? c.decodeIfPresent(String.self, forKey: .terminalFont)).flatMap { $0.isEmpty ? nil : $0 }
+        terminalFontSize = Self.clamped((try? c.decodeIfPresent(Double.self, forKey: .terminalFontSize)) ?? 13,
+                                        to: Self.fontSizeRange).rounded()
+        terminalTheme = (try? c.decodeIfPresent(TerminalTheme.self, forKey: .terminalTheme)) ?? .dark
+        terminalOpacity = Self.clamped((try? c.decodeIfPresent(Double.self, forKey: .terminalOpacity)) ?? 0.8,
+                                       to: Self.terminalOpacityRange)
+        cursorStyle = (try? c.decodeIfPresent(CursorShape.self, forKey: .cursorStyle)) ?? .block
+        cursorBlink = (try? c.decodeIfPresent(Bool.self, forKey: .cursorBlink)) ?? true
+        copyOnSelect = (try? c.decodeIfPresent(Bool.self, forKey: .copyOnSelect)) ?? false
+        confirmQuit = (try? c.decodeIfPresent(Bool.self, forKey: .confirmQuit)) ?? true
         // A bad "agents" entry must not discard the rest of the file: drop the whole list.
         do {
             agents = try c.decodeIfPresent([AgentProfile].self, forKey: .agents)?.filter {
@@ -65,6 +103,10 @@ nonisolated struct Config: Codable, Sendable {
             appLog("config.json \"agents\" is invalid, ignoring it: \(error)")
             agents = nil
         }
+    }
+
+    static func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
+        min(max(value, range.lowerBound), range.upperBound)
     }
 
     /// Loads config.json (writing defaults if missing), then applies the
@@ -198,6 +240,27 @@ nonisolated enum HotkeyTarget: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// The terminal's colors (DESIGN §9.1): today's dark ones, light ones, or whichever
+/// matches the system's appearance.
+nonisolated enum TerminalTheme: String, Codable, Sendable, CaseIterable {
+    case dark, light, system
+
+    var title: String {
+        switch self {
+        case .dark: "Dark"
+        case .light: "Light"
+        case .system: "Follow system"
+        }
+    }
+}
+
+/// The cursor's shape (DESIGN §9.1); blinking is a separate setting.
+nonisolated enum CursorShape: String, Codable, Sendable, CaseIterable {
+    case block, bar, underline
+
+    var title: String { rawValue.capitalized }
+}
+
 nonisolated struct SavedPoint: Codable, Sendable {
     var x: Double
     var y: Double
@@ -224,6 +287,8 @@ nonisolated struct SavedPill: Codable, Sendable {
     var sidebarCollapsed: Bool?
     var sidebarWidth: Double?
     var selected: Int?
+    /// Stays open when clicking outside (DESIGN §6.3).
+    var pinned: Bool?
     var sessions: [SavedSession]
 }
 

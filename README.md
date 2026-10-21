@@ -38,7 +38,7 @@ Because you build Poppy yourself, macOS runs it without any "unidentified develo
 
 macOS asks whether Poppy may access your Desktop or Documents folders when the agent works there (the agent runs inside Poppy, so its file access counts as Poppy's). If you have an Apple Development certificate (Xcode creates one for free when you sign in with your Apple ID under Xcode → Settings → Accounts), the build is signed with it and macOS remembers your answers across updates; otherwise it may ask again after each rebuild. Set `POPPY_SIGN_IDENTITY` to choose a certificate, or `-` to skip signing with one.
 
-To start Poppy at login, add it in **System Settings → General → Login Items**.
+To start Poppy at login, turn on **Launch at login** in Poppy's Settings (⌘, in the panel).
 
 ## Using it
 

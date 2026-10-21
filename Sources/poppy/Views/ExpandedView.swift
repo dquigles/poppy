@@ -190,10 +190,17 @@ final class ExpandedView: NSView {
 final class HeaderView: NSView {
     weak var controller: PanelController?
     var onDone: (() -> Void)?
+    /// The pin (keep open when clicking outside) and fold buttons (DESIGN §7.9).
+    var onPin: (() -> Void)?
+    var onFold: (() -> Void)?
 
     private var drag = WindowDrag()
     private let label = NSTextField(labelWithString: "")
     private let doneButton = FirstMouseButton(title: "Done", target: nil, action: nil)
+    private let pinButton = HeaderButton(symbol: "pin")
+    private let foldButton = HeaderButton(symbol: "minus")
+    private var pinned = false
+    private var pinShown = true
     private var directoryTitle = ""
     private var path: String?
     private var showsSettings = false
@@ -215,6 +222,25 @@ final class HeaderView: NSView {
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 16),
         ])
+
+        // Right of the title's centered area: the pin, then fold at the edge.
+        foldButton.target = self
+        foldButton.action = #selector(fold)
+        foldButton.toolTip = "Fold"
+        foldButton.setAccessibilityLabel("Fold")
+        pinButton.target = self
+        pinButton.action = #selector(pin)
+        let buttons = NSStackView(views: [pinButton, foldButton])
+        buttons.spacing = 2
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(buttons)
+        buttonStack = buttons
+        NSLayoutConstraint.activate([
+            buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            buttons.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -8),
+        ])
+        setPinned(false, shown: true)
 
         doneButton.bezelStyle = .push
         doneButton.controlSize = .small
@@ -259,6 +285,18 @@ final class HeaderView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    private var buttonStack: NSStackView!
+
+    /// The pin shows filled while on; it's hidden while a click outside never folds.
+    func setPinned(_ on: Bool, shown: Bool) {
+        pinned = on
+        pinShown = shown
+        pinButton.setSymbol(on ? "pin.fill" : "pin")
+        pinButton.toolTip = on ? "Pinned: stays open" : "Keep open when clicking outside"
+        pinButton.setAccessibilityLabel(on ? "Unpin" : "Pin")
+        pinButton.isHidden = !shown || showsSettings
+    }
+
     /// What the header shows (for Poppy Dev's debug hook).
     var shownTitle: String { label.stringValue }
 
@@ -279,9 +317,13 @@ final class HeaderView: NSView {
         label.stringValue = shows ? "Settings" : directoryTitle
         toolTip = shows ? nil : path
         doneButton.isHidden = !shows
+        foldButton.isHidden = shows
+        pinButton.isHidden = shows || !pinShown
     }
 
     @objc private func done() { onDone?() }
+    @objc private func pin() { onPin?() }
+    @objc private func fold() { onFold?() }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -291,6 +333,9 @@ final class HeaderView: NSView {
         let local = convert(point, from: superview)
         for view in [doneButton, renameField].compactMap({ $0 }) where !view.isHidden {
             if view.frame.contains(local) { return view.hitTest(point) ?? view }
+        }
+        for button in [pinButton, foldButton] where !button.isHidden {
+            if convert(button.frame, from: button.superview).contains(local) { return button }
         }
         return self
     }
@@ -319,6 +364,30 @@ final class HeaderView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         controller?.showContextMenu(event: event, in: self)
     }
+}
+
+/// A small borderless symbol button in the header (pin, fold).
+final class HeaderButton: NSButton {
+    init(symbol: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
+        isBordered = false
+        bezelStyle = .accessoryBarAction
+        imagePosition = .imageOnly
+        contentTintColor = .secondaryLabelColor
+        setSymbol(symbol)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 22).isActive = true
+        heightAnchor.constraint(equalToConstant: 22).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setSymbol(_ name: String) {
+        image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 /// Asks before closing a session whose agent is working or waiting (DESIGN §7.17), like a

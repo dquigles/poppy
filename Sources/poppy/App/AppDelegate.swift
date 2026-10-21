@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.hotKeys = hotKeys
         manager.hotKeys = hotKeys
         statusItem = makeStatusItem(menu: manager.statusMenu)
+        manager.statusItem = statusItem
         if AppVariant.isDev { debugHook = DebugHook(manager: manager) }
         for request in pendingRequests { manager.apply(request) }
         pendingRequests = []
@@ -69,6 +70,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func isDirectory(_ path: String) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    /// Confirm before quitting (DESIGN §4): Poppy's own Quit asks while agents are busy.
+    /// Logout, restart and shutdown (a quit Apple event with a reason) never wait.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let manager, manager.config.confirmQuit, manager.busySessionCount > 0 else { return .terminateNow }
+        if NSAppleEventManager.shared().currentAppleEvent?.attributeDescriptor(forKeyword: kAEQuitReason) != nil {
+            return .terminateNow
+        }
+        let count = manager.busySessionCount
+        DispatchQueue.main.async { [weak self] in self?.askBeforeQuitting(count) }
+        return .terminateLater
+    }
+
+    /// A standalone alert above the panels; Poppy is active only while it shows, as for
+    /// the folder picker (DESIGN §9.8), and gives activation back if the quit is cancelled.
+    private func askBeforeQuitting(_ count: Int) {
+        let previous = NSWorkspace.shared.frontmostApplication
+        let alert = NSAlert()
+        alert.messageText = "Quit \(AppVariant.name)?"
+        alert.informativeText = count == 1 ? "1 agent is still working." : "\(count) agents are still working."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.level = .statusBar + 1
+        alert.window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+        appLog("quit: asking (\(count) busy)")
+        NSApp.activate()
+        let quit = alert.runModal() == .alertFirstButtonReturn
+        appLog(quit ? "quit: confirmed" : "quit: cancelled")
+        if !quit, let previous, previous != NSRunningApplication.current {
+            NSApp.yieldActivation(to: previous)
+            previous.activate()
+        }
+        NSApp.reply(toApplicationShouldTerminate: quit)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

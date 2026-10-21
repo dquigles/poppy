@@ -28,6 +28,14 @@ final class PillManager: NSObject {
     }()
     /// Set while restoring, so building the pills doesn't save a half-built layout.
     private var restoring = false
+    /// The menu bar item, colored by status while pills are hidden (DESIGN §7.21).
+    weak var statusItem: NSStatusItem? {
+        didSet { updateMenuBarIcon() }
+    }
+    /// Follow system: the terminals switch with macOS's appearance (DESIGN §9.1).
+    private var appearanceObservation: NSKeyValueObservation?
+    /// Held while every pill is hidden, so App Nap doesn't slow status polling (DESIGN §7.21).
+    private var napActivity: NSObjectProtocol?
 
     /// Restores the saved layout, or one pill from `config`'s `command` and `cwd` (a first
     /// launch, or a state.json from before M25).
@@ -56,6 +64,10 @@ final class PillManager: NSObject {
         restoring = false
         appLog("pills: \(pills.count) restored (\(pills.map { "\($0.sessionCount)" }.joined(separator: ", ")) sessions)")
         saveLayout()
+        pillVisibilityChanged()  // Hide pill: they start hidden
+        appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.allSessions.forEach { $0.appearanceChanged() } }
+        }
         agents.refreshIfNeeded(agents.profiles(for: config))
     }
 
@@ -131,6 +143,7 @@ final class PillManager: NSObject {
         if recent === pill { recent = pills.last }
         appLog("pills: closed one (\(pills.count) left)")
         saveLayout()
+        pillVisibilityChanged()
     }
 
     /// Expanding `pill` first folds the one that's open. False (nothing expands) if that
@@ -154,6 +167,7 @@ final class PillManager: NSObject {
     }
 
     func terminateAll() {
+        endNapActivity()
         saveLayout()
         pills.forEach { $0.terminateAll() }
     }
@@ -184,7 +198,9 @@ final class PillManager: NSObject {
     /// `expanded`, an open panel under it too (a pill dropped onto it); a collapsed pill
     /// over that panel comes first.
     func dropTarget(at mouse: NSPoint, excluding excluded: PanelController, expanded: Bool = false) -> PanelController? {
-        let under = pills.filter { $0 !== excluded && !$0.isAnimating && NSMouseInRect(mouse, $0.panel.frame, false) }
+        let under = pills.filter {
+            $0 !== excluded && !$0.isAnimating && !$0.isPillHidden && NSMouseInRect(mouse, $0.panel.frame, false)
+        }
         return under.first { $0.state == .collapsed }
             ?? (expanded ? under.first { $0.state == .expanded && !$0.panel.inLiveResize } : nil)
     }
@@ -268,6 +284,7 @@ final class PillManager: NSObject {
             let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? PanelController.screen(for: rect)
             var saved = source.savedPill  // the same expanded size and sidebar
             saved.origin = nil
+            saved.pinned = nil
             saved.selected = 0
             saved.sessions = []
             let pill = PanelController(manager: self, saved: saved, frame: PanelController.clamp(rect, in: screen),
@@ -357,6 +374,145 @@ final class PillManager: NSObject {
         if !Config.saveValue(on, forKey: "statusHooks") {
             appLog("status hooks: statusHooks not saved; it applies until Poppy quits")
         }
+    }
+
+    /// The Panel, Terminal and General cards (DESIGN §7.9): applied at once to every pill
+    /// and session, saved to config.json, and every settings page refreshed.
+    func applySetting(_ change: SettingsChange) {
+        var refresh = true
+        switch change {
+        case .foldOnClickOutside(let on):
+            config.foldOnClickOutside = on
+            save(on, "foldOnClickOutside")
+            pills.forEach { $0.clickOutsideChanged() }
+        case .fadeWhenInactive(let on):
+            config.fadeWhenInactive = on
+            save(on, "fadeWhenInactive")
+            pills.forEach { $0.updateFade() }
+        case .inactiveOpacity(let value, let done):
+            config.inactiveOpacity = Config.clamped(value, to: Config.inactiveOpacityRange)
+            if done { save(config.inactiveOpacity, "inactiveOpacity") }
+            refresh = done
+            pills.forEach { $0.updateFade() }
+        case .hidePill(let on):
+            config.hidePill = on
+            save(on, "hidePill")
+            pills.forEach { $0.hidePillChanged() }
+            pillVisibilityChanged()
+        case .terminalFont(let name):
+            config.terminalFont = name
+            save(name ?? NSNull(), "terminalFont")
+            lookChanged()
+        case .terminalFontSize(let size):
+            setTerminalFontSize(size)
+        case .terminalTheme(let theme):
+            config.terminalTheme = theme
+            save(theme.rawValue, "terminalTheme")
+            lookChanged()
+        case .terminalOpacity(let value, let done):
+            config.terminalOpacity = Config.clamped(value, to: Config.terminalOpacityRange)
+            if done { save(config.terminalOpacity, "terminalOpacity") }
+            refresh = done
+            lookChanged()
+        case .cursorStyle(let shape):
+            config.cursorStyle = shape
+            save(shape.rawValue, "cursorStyle")
+            lookChanged()
+        case .cursorBlink(let on):
+            config.cursorBlink = on
+            save(on, "cursorBlink")
+            lookChanged()
+        case .copyOnSelect(let on):
+            config.copyOnSelect = on
+            save(on, "copyOnSelect")
+            lookChanged()
+        case .confirmQuit(let on):
+            config.confirmQuit = on
+            save(on, "confirmQuit")
+        case .launchAtLogin(let on):
+            LaunchAtLogin.set(on)
+        case .openLoginItems:
+            LaunchAtLogin.openSystemSettings()
+        }
+        if refresh { pills.forEach { $0.refreshSettings() } }
+    }
+
+    /// ⌘+ / ⌘– (`step` ±1) and ⌘0 (0: back to 13 pt) in a terminal: the one size for all.
+    func zoomTerminal(_ step: Int) {
+        let size = step == 0 ? Config().terminalFontSize : config.terminalFontSize + Double(step)
+        setTerminalFontSize(size)
+        pills.forEach { $0.refreshSettings() }
+    }
+
+    private func setTerminalFontSize(_ size: Double) {
+        let size = Config.clamped(size, to: Config.fontSizeRange).rounded()
+        guard size != config.terminalFontSize else { return }
+        config.terminalFontSize = size
+        save(size, "terminalFontSize")
+        lookChanged()
+    }
+
+    /// Every session's terminal gets the new look now (new ones get it at creation).
+    private func lookChanged() {
+        allSessions.forEach { $0.setLook(from: config) }
+    }
+
+    private func save(_ value: Any, _ key: String) {
+        appLog("settings: \(key) = \(value)")
+        if !Config.saveValue(value, forKey: key) {
+            appLog("settings: \(key) not saved; it applies until Poppy quits")
+        }
+    }
+
+    // MARK: - Hidden pills (DESIGN §7.21)
+
+    private var allHidden: Bool { !pills.isEmpty && pills.allSatisfy(\.isPillHidden) }
+
+    /// A pill hid or showed: the menu bar icon, and App Nap held off while all are hidden.
+    func pillVisibilityChanged() {
+        if allHidden, napActivity == nil {
+            napActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Poppy watches its agents' status while its pills are hidden")
+            appLog("pills: all hidden")
+        } else if !allHidden {
+            endNapActivity()
+        }
+        updateMenuBarIcon()
+    }
+
+    private func endNapActivity() {
+        guard let napActivity else { return }
+        ProcessInfo.processInfo.endActivity(napActivity)
+        self.napActivity = nil
+    }
+
+    /// With Hide pill on, the menu bar icon takes the most urgent status color and its
+    /// tooltip lists the sessions that need you; otherwise it's never colored (M14).
+    func updateMenuBarIcon() {
+        guard let button = statusItem?.button else { return }
+        guard config.hidePill else {
+            button.contentTintColor = nil
+            button.toolTip = AppVariant.name
+            return
+        }
+        let sessions = allSessions
+        let urgent = sessions.map(\.status).max { PanelController.urgency($0) < PanelController.urgency($1) } ?? .idle
+        if button.contentTintColor != urgent.tint { button.contentTintColor = urgent.tint }
+        let needYou = sessions.filter { $0.status == .waiting || $0.status == .done }
+        button.toolTip = needYou.isEmpty ? AppVariant.name
+            : ([AppVariant.name] + needYou.map { "\($0.name)\(PillView.statusSuffix($0.status))" }).joined(separator: "\n")
+    }
+
+    @objc private func showRecentFromMenu() {
+        recent?.open()
+    }
+
+    // MARK: - Quitting (DESIGN §4)
+
+    /// Agents still working or waiting, for Confirm before quitting.
+    var busySessionCount: Int {
+        allSessions.filter { $0.status == .working || $0.status == .waiting }.count
     }
 
     func setHotkeyTarget(_ target: HotkeyTarget) {
@@ -521,6 +677,13 @@ final class PillManager: NSObject {
             quit.target = self
             menu.addItem(quit)
             return
+        }
+        if config.hidePill, recent.isPillHidden {
+            let show = NSMenuItem(title: "Show", action: #selector(showRecentFromMenu), keyEquivalent: "")
+            show.target = self
+            show.isEnabled = !isAnimating
+            menu.addItem(show)
+            menu.addItem(.separator())
         }
         if pills.count > 1 {
             menu.addItem(.sectionHeader(title: "Pills"))
