@@ -213,6 +213,8 @@ final class PanelController: NSObject {
         }
         settings.hotkeyField.onEnd = { [weak self] in self?.hotKeys?.endRecording() }
         expandedView.header.onDone = { [weak self] in self?.closeSettings() }
+        expandedView.header.onNew = { [weak self] in self?.newSession() }
+        expandedView.header.onNewMenu = { [weak self] view in self?.showNewSessionMenu(from: view) }
         expandedView.header.onPin = { [weak self] in self?.togglePin() }
         expandedView.header.onFold = { [weak self] in self?.collapse() }
         settings.onChange = { [weak self] change in self?.manager.applySetting(change) }
@@ -571,8 +573,6 @@ final class PanelController: NSObject {
         }
         sidebar.onRenameRequest = { [weak self] index in self?.beginRename(index) }
         sidebar.onRenamed = { [weak self] _, text in self?.renameEnded(text) }
-        sidebar.onNew = { [weak self] in self?.newSession() }
-        sidebar.onNewMenu = { [weak self] view in self?.showNewSessionMenu(from: view) }
         sidebar.onToggleRail = { [weak self] in self?.toggleSidebarRail() }
         sidebar.onResize = { [weak self] width, ended in self?.sidebarDragged(to: width, ended: ended) }
         sidebar.onRowDragBegan = { [weak self] index in self?.rowDragBegan(index) ?? false }
@@ -1031,7 +1031,8 @@ final class PanelController: NSObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.addItem(.sectionHeader(title: "New Session in \(Self.directoryName(workingDirectory))"))
-        menuAgents = agents.profiles(for: agentConfig)
+        // Shells are the Terminal item below, not listed as agents (e.g. a selected terminal).
+        menuAgents = agents.profiles(for: agentConfig).filter { Harness(command: $0.command) != .shell }
         agents.refreshIfNeeded(menuAgents)
         for (index, profile) in menuAgents.enumerated() {
             let installed = agents.isInstalled(profile) ?? true
@@ -1043,6 +1044,10 @@ final class PanelController: NSObject {
             item.isEnabled = installed
             menu.addItem(item)
         }
+        let terminal = NSMenuItem(title: "Terminal", action: #selector(newTerminalSession), keyEquivalent: "")
+        terminal.target = self
+        terminal.image = HarnessLogo.image(for: .shell, points: 16)
+        menu.addItem(terminal)
         menu.addItem(.separator())
         let folder = NSMenuItem(title: "New Session in Folder…", action: #selector(newSessionInFolder), keyEquivalent: "")
         folder.target = self
@@ -1053,6 +1058,10 @@ final class PanelController: NSObject {
     @objc private func newSessionWithAgent(_ sender: NSMenuItem) {
         guard menuAgents.indices.contains(sender.tag) else { return }
         newSession(command: menuAgents[sender.tag].command)
+    }
+
+    @objc private func newTerminalSession() {
+        newSession(command: ShellEnvironment.terminalCommand)
     }
 
     @objc private func newSessionInFolder() {

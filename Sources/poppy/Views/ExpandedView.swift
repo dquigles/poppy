@@ -190,13 +190,18 @@ final class ExpandedView: NSView {
 final class HeaderView: NSView {
     weak var controller: PanelController?
     var onDone: (() -> Void)?
-    /// The pin (keep open when clicking outside) and fold buttons (DESIGN §7.9).
+    /// ＋ and its ⌄ menu (another agent, another folder; shown from the view) at the left, the
+    /// pin (keep open when clicking outside) and fold buttons at the right (DESIGN §7.9).
+    var onNew: (() -> Void)?
+    var onNewMenu: ((NSView) -> Void)?
     var onPin: (() -> Void)?
     var onFold: (() -> Void)?
 
     private var drag = WindowDrag()
     private let label = NSTextField(labelWithString: "")
     private let doneButton = FirstMouseButton(title: "Done", target: nil, action: nil)
+    private let newButton = HeaderButton(symbol: "plus")
+    private let moreButton = HeaderButton(symbol: "chevron.down", width: 16)
     private let pinButton = HeaderButton(symbol: "pin")
     private let foldButton = HeaderButton(symbol: "minus")
     private var pinned = false
@@ -220,7 +225,25 @@ final class HeaderView: NSView {
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 16),
+        ])
+
+        // Left of the title: ＋, a new session, and ⌄, its menu (DESIGN §7.17).
+        newButton.target = self
+        newButton.action = #selector(newSession)
+        newButton.toolTip = "New Session (⌘T)"
+        newButton.setAccessibilityLabel("New Session")
+        moreButton.target = self
+        moreButton.action = #selector(newSessionMenu)
+        moreButton.toolTip = "New session with another agent or folder"
+        moreButton.setAccessibilityLabel("New Session with…")
+        let leftButtons = NSStackView(views: [newButton, moreButton])
+        leftButtons.spacing = 0
+        leftButtons.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(leftButtons)
+        NSLayoutConstraint.activate([
+            leftButtons.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            leftButtons.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: leftButtons.trailingAnchor, constant: 8),
         ])
 
         // Right of the title's centered area: the pin, then fold at the edge.
@@ -318,23 +341,28 @@ final class HeaderView: NSView {
         toolTip = shows ? nil : path
         doneButton.isHidden = !shows
         foldButton.isHidden = shows
+        newButton.isHidden = shows
+        moreButton.isHidden = shows
         pinButton.isHidden = shows || !pinShown
     }
 
     @objc private func done() { onDone?() }
+    @objc private func newSession() { onNew?() }
+    @objc private func newSessionMenu() { onNewMenu?(moreButton) }
     @objc private func pin() { onPin?() }
     @objc private func fold() { onFold?() }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The whole header, including the title, drags; only Done takes its own clicks.
+    /// The whole header, including the title, drags; only Done, the buttons and a rename field
+    /// take their own clicks.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
         let local = convert(point, from: superview)
         for view in [doneButton, renameField].compactMap({ $0 }) where !view.isHidden {
             if view.frame.contains(local) { return view.hitTest(point) ?? view }
         }
-        for button in [pinButton, foldButton] where !button.isHidden {
+        for button in [newButton, moreButton, pinButton, foldButton] where !button.isHidden {
             if convert(button.frame, from: button.superview).contains(local) { return button }
         }
         return self
@@ -366,17 +394,17 @@ final class HeaderView: NSView {
     }
 }
 
-/// A small borderless symbol button in the header (pin, fold).
+/// A small borderless symbol button in the header (＋, ⌄, pin, fold).
 final class HeaderButton: NSButton {
-    init(symbol: String) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
+    init(symbol: String, width: CGFloat = 22) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 22))
         isBordered = false
         bezelStyle = .accessoryBarAction
         imagePosition = .imageOnly
         contentTintColor = .secondaryLabelColor
         setSymbol(symbol)
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 22).isActive = true
+        widthAnchor.constraint(equalToConstant: width).isActive = true
         heightAnchor.constraint(equalToConstant: 22).isActive = true
     }
 

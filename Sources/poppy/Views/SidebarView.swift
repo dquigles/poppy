@@ -30,7 +30,6 @@ final class SidebarView: NSView {
     static let railWidth: CGFloat = 44
     static let rowHeight: CGFloat = 28
     static let rowSpacing: CGFloat = 2
-    static let barHeight: CGFloat = 28
     /// Rows line up with the terminal's 8 pt inset on the left.
     static let leftInset: CGFloat = 8
     static let rightInset: CGFloat = 6
@@ -42,9 +41,6 @@ final class SidebarView: NSView {
     var onRenameRequest: ((Int) -> Void)?
     /// A name typed in a row (nil: cancelled); then the terminal takes the keyboard back.
     var onRenamed: ((Int, String?) -> Void)?
-    var onNew: (() -> Void)?
-    /// The ＋ menu (another agent, another folder), shown from `view`.
-    var onNewMenu: ((NSView) -> Void)?
     /// The right edge dragged to `width` (not yet snapped or clamped); `ended` on mouse-up.
     var onResize: ((_ width: CGFloat, _ ended: Bool) -> Void)?
     /// A double-click on the right edge: rail ⇄ names.
@@ -60,7 +56,6 @@ final class SidebarView: NSView {
         didSet {
             guard isRail != oldValue else { return }
             rows.forEach { $0.isRail = isRail }
-            moreButton.isHidden = isRail
             needsLayout = true
         }
     }
@@ -68,8 +63,6 @@ final class SidebarView: NSView {
     private let scrollView = NSScrollView()
     private let documentView = SidebarDocumentView()
     private var rows: [SidebarRow] = []
-    private let plusButton = FirstMouseButton()
-    private let moreButton = FirstMouseButton()
     private var canClose = false
     private var renameField: RenameField?
     private let resizeHandle = SidebarResizeHandle()
@@ -86,30 +79,10 @@ final class SidebarView: NSView {
         scrollView.documentView = documentView
         scrollView.contentView.drawsBackground = false
         addSubview(scrollView)
-
-        Self.configure(plusButton, symbol: "plus", label: "New Session")
-        plusButton.toolTip = "New Session (⌘T)"
-        plusButton.target = self
-        plusButton.action = #selector(plusClicked)
-        addSubview(plusButton)
-        Self.configure(moreButton, symbol: "chevron.down", label: "New Session with…")
-        moreButton.toolTip = "New session with another agent or folder"
-        moreButton.target = self
-        moreButton.action = #selector(moreClicked)
-        addSubview(moreButton)
         addSubview(resizeHandle)  // last: on top of the rows' right edge
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    private static func configure(_ button: NSButton, symbol: String, label: String) {
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        button.imagePosition = .imageOnly
-        button.contentTintColor = .secondaryLabelColor
-        button.setAccessibilityLabel(label)
-    }
 
     /// `hidden`: a row dragged out as a liquid blob, left blank in the list (DESIGN §7.19).
     func update(_ items: [SidebarItem], selected: Int, canClose: Bool, hidden: Int? = nil) {
@@ -134,8 +107,7 @@ final class SidebarView: NSView {
 
     override func layout() {
         super.layout()
-        let bar = Self.barHeight
-        scrollView.frame = NSRect(x: 0, y: bar, width: bounds.width, height: max(bounds.height - bar, 0))
+        scrollView.frame = bounds
         let rowWidth = bounds.width - Self.leftInset - Self.rightInset
         let height = CGFloat(rows.count) * (Self.rowHeight + Self.rowSpacing)
         // Scrolling (wheel, bounce and scroller) only when the rows don't all fit.
@@ -150,14 +122,6 @@ final class SidebarView: NSView {
         for (index, row) in rows.enumerated() {
             row.frame = NSRect(x: Self.leftInset, y: CGFloat(index) * (Self.rowHeight + Self.rowSpacing),
                                width: rowWidth, height: Self.rowHeight)
-        }
-        let button: CGFloat = 22
-        let y = (bar - button) / 2
-        if isRail {
-            plusButton.frame = NSRect(x: Self.leftInset + (rowWidth - button) / 2, y: y, width: button, height: button)
-        } else {
-            plusButton.frame = NSRect(x: Self.leftInset + 3, y: y, width: button, height: button)
-            moreButton.frame = NSRect(x: plusButton.frame.maxX, y: y, width: 16, height: button)
         }
         // The gap between the rows and the terminal, plus a little of the rows.
         resizeHandle.frame = NSRect(x: bounds.width - Self.rightInset - 2, y: 0,
@@ -235,9 +199,6 @@ final class SidebarView: NSView {
     }
 
     // MARK: Actions
-
-    @objc private func plusClicked() { onNew?() }
-    @objc private func moreClicked() { onNewMenu?(moreButton) }
 
     fileprivate func rowClicked(_ row: SidebarRow, event: NSEvent) {
         if event.clickCount == 2 {

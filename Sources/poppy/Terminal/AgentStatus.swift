@@ -59,7 +59,7 @@ nonisolated enum StatusHooks {
         case .opencode:
             let config = directory(fromEnvironment: "XDG_CONFIG_HOME") ?? home.appendingPathComponent(".config")
             writeIfChanged(opencodePlugin, to: config.appendingPathComponent("opencode/plugins/poppy-status.ts"))
-        case .other:
+        case .shell, .other:
             break
         }
         return command

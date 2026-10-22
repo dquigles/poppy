@@ -123,7 +123,7 @@ final class UsageMonitor {
                     case .claude: return .success(try ClaudeUsage.fetch(command: command))
                     case .codex: return .success(try CodexUsage.fetch(command: command))
                     case .antigravity: return .success(try AntigravityUsage.fetch(command: command))
-                    case .opencode, .other: throw UsageError.failed("no usage source")
+                    case .opencode, .shell, .other: throw UsageError.failed("no usage source")
                     }
                 } catch { return .failure(error) }
             }.value

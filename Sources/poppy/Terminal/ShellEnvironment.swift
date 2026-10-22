@@ -35,6 +35,11 @@ nonisolated enum ShellEnvironment {
         )
     }
 
+    /// A plain terminal: the user's login shell, inside the usual `-l -i -c` one.
+    static var terminalCommand: String {
+        resolveShell(ProcessInfo.processInfo.environment["SHELL"]) + " -l"
+    }
+
     private static func resolveShell(_ shell: String?) -> String {
         if let shell, shell.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: shell) {
             return shell

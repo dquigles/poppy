@@ -3,7 +3,7 @@ import AppKit
 /// The agent CLI Poppy is running, detected from the command (DESIGN §7.11).
 /// Drives the pill logo.
 nonisolated enum Harness: Sendable {
-    case claude, codex, antigravity, opencode, other
+    case claude, codex, antigravity, opencode, shell, other
 
     /// From the command's first word, e.g. "/usr/local/bin/claude --x" -> .claude.
     /// Aliases and wrappers (e.g. "npx …") are `.other`.
@@ -16,6 +16,7 @@ nonisolated enum Harness: Sendable {
         case "codex": self = .codex
         case "agy": self = .antigravity  // not "antigravity": likely the IDE's launcher
         case "opencode": self = .opencode
+        case "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu": self = .shell  // a plain terminal
         default: self = .other
         }
     }
@@ -26,6 +27,7 @@ nonisolated enum Harness: Sendable {
         case .codex: "Codex"
         case .antigravity: "Antigravity"
         case .opencode: "opencode"
+        case .shell: "Terminal"
         case .other: "Poppy"
         }
     }
@@ -50,19 +52,28 @@ enum HarnessLogo {
         return dirs
     }()
 
-    private static func fileName(for harness: Harness) -> String {
+    private static func fileName(for harness: Harness) -> String? {
         switch harness {
         case .claude: "claude"
         case .codex: "codex"
         case .antigravity: "antigravity"
         case .opencode: "opencode"
-        case .other: "poppy"  // unrecognized CLIs and plain shells
+        case .shell: nil  // SF Symbol `terminal`
+        case .other: "poppy"  // unrecognized CLIs
         }
     }
 
-    /// Template logo sized `points` × `points`; `.other` is the Poppy logo.
+    /// Template logo sized `points` × `points`; `.other` is the Poppy logo, `.shell` the
+    /// SF Symbol `terminal`.
     static func image(for harness: Harness, points: CGFloat) -> NSImage {
-        image(named: fileName(for: harness), points: points, description: harness.displayName)
+        guard let name = fileName(for: harness) else {
+            let config = NSImage.SymbolConfiguration(pointSize: points * 0.75, weight: .regular)
+            let image = NSImage(systemSymbolName: "terminal", accessibilityDescription: harness.displayName)?
+                .withSymbolConfiguration(config) ?? NSImage()
+            image.isTemplate = true
+            return image
+        }
+        return image(named: name, points: points, description: harness.displayName)
     }
 
     /// The menu bar icon: Poppy's round-petal mark (DESIGN §7.12; the pill's default logo
