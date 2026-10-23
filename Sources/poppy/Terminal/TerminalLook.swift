@@ -87,7 +87,7 @@ struct TerminalPalette: Equatable {
     static let dark = TerminalPalette(
         foreground: NSColor(white: 0.92, alpha: 1),
         background: NSColor(white: 0.05, alpha: 1),
-        cursor: NSColor.selectedControlColor,
+        cursor: NSColor(white: 0.92, alpha: 1),  // the foreground, as SwiftTerm draws it by default
         selection: NSColor(srgbRed: 0, green: 166.0 / 255.0, blue: 178.0 / 255.0, alpha: 1),
         ansi: SwiftTerm.Color.terminalAppColors)
 
