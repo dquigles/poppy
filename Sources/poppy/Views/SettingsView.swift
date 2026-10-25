@@ -26,6 +26,10 @@ struct SettingsModel {
     /// "Hotkey opens" (DESIGN §11): the choices' titles and the current one.
     var hotkeyTargets: [String]
     var hotkeyTarget: Int
+    /// Act on Selection's hotkey (DESIGN §9.14); nil when none is registered.
+    var actHotkey: String?
+    var canRecordActHotkey: Bool
+    var actEnabled: Bool
     /// Panel, Terminal and General (M27): the global settings as saved.
     var settings: Config
     var launchAtLogin: LaunchAtLogin.State
@@ -46,6 +50,9 @@ enum SettingsChange {
     case cursorBlink(Bool)
     case copyOnSelect(Bool)
     case confirmQuit(Bool)
+    /// "Accessibility" or "ScreenCapture": that Privacy & Security pane.
+    case openPrivacySettings(String)
+    case actCleanup(ActCleanup)
     case launchAtLogin(Bool)
     case openLoginItems
 }
@@ -69,8 +76,15 @@ final class SettingsView: NSView {
     var onHotkeyTarget: ((Int) -> Void)?
     var onEditConfig: (() -> Void)?
     var onChange: ((SettingsChange) -> Void)?
+    var onActEnabled: ((Bool) -> Void)?
+    /// The intro (DESIGN §9.15), from its first page or only its permissions page.
+    var onShowIntro: (() -> Void)?
+    var onCheckPermissions: (() -> Void)?
 
     let hotkeyField = HotkeyField()
+    let actHotkeyField = HotkeyField()
+    /// The intro's pages, shown here in place of the settings (DESIGN §9.15).
+    let intro = IntroView()
     private let scrollView = NSScrollView()
     private let agentPopUp = FirstMousePopUpButton()
     private let directoryPopUp = FirstMousePopUpButton()
@@ -104,6 +118,13 @@ final class SettingsView: NSView {
     private let loginNote = SettingsLabel.description("")
     private let loginItemsButton = FirstMouseButton(title: "Open Login Items", target: nil, action: nil)
     private let confirmQuitSwitch = FirstMouseSwitch()
+    // Act on Selection
+    private let actSwitch = FirstMouseSwitch()
+    private let actCleanupPopUp = FirstMousePopUpButton()
+    private let permissionsButton = FirstMouseButton(title: "Check Permissions…", target: nil, action: nil)
+    private let introButton = FirstMouseButton(title: "Show Intro…", target: nil, action: nil)
+    private var actHotkeyTitle: NSTextField!
+    private var actCleanupTitle: NSTextField!
     private var loginTitle: NSTextField!
     /// Titles of rows whose control can be disabled, dimmed with it.
     private var onInputTitle: NSTextField!
@@ -169,6 +190,17 @@ final class SettingsView: NSView {
         loginItemsButton.target = self
         loginItemsButton.action = #selector(openLoginItems)
         hotkeyField.messageLabel.stringValue = "Click, then press the new shortcut."
+        actCleanupPopUp.addItems(withTitles: ActCleanup.allCases.map(\.title))
+        actCleanupPopUp.target = self
+        actCleanupPopUp.action = #selector(actCleanupChosen)
+        actSwitch.controlSize = .small
+        actSwitch.target = self
+        actSwitch.action = #selector(actChanged)
+        for button in [permissionsButton, introButton] {
+            button.bezelStyle = .push
+            button.target = self
+            button.action = #selector(introButtonClicked(_:))
+        }
 
         let restartNote = "Changing it restarts the agent."
         let general = Self.group([
@@ -220,6 +252,19 @@ final class SettingsView: NSView {
         let generalGroup = Self.group([
             login.view,
             Self.row("Confirm before quitting", "Asks while an agent is working or waiting.", confirmQuitSwitch).view,
+            Self.row("Intro", "What Poppy is, and setting up the agent, hotkeys and permissions.", introButton).view,
+        ])
+        let actHotkey = Self.row("Hotkey", actHotkeyField.messageLabel, actHotkeyField)
+        let actCleanup = Self.row("Close finished sessions", "Done ones you haven't opened. Working ones and ones you "
+                                  + "opened stay.", actCleanupPopUp)
+        actHotkeyTitle = actHotkey.title
+        actCleanupTitle = actCleanup.title
+        let actGroup = Self.group([
+            Self.row("Act on Selection", "Off, its hotkey does nothing.", actSwitch).view,
+            actHotkey.view,
+            actCleanup.view,
+            Self.row("Permissions", "Accessibility reads and acts in apps; Screen Recording takes the screenshot.",
+                     permissionsButton).view,
         ])
         let advanced = Self.group([
             Self.row("Custom agents and other options", "In config.json, read when Poppy starts.",
@@ -228,9 +273,13 @@ final class SettingsView: NSView {
 
         let headers = [
             Self.sectionHeader("Pill"), Self.sectionHeader("Auto-Open", autoOpenNote), Self.sectionHeader("Panel"),
-            Self.sectionHeader("Terminal"), Self.sectionHeader("General"), Self.sectionHeader("Advanced"),
+            Self.sectionHeader("Terminal"),
+            Self.sectionHeader("Act on Selection", SettingsLabel.description(
+                "Select something in any app and press the hotkey: a Claude Code session in the pill deals with "
+                + "it there, or explains it. With nothing selected, drag over a region to screenshot instead.")),
+            Self.sectionHeader("General"), Self.sectionHeader("Advanced"),
         ]
-        let groups = [pill, autoOpen, panelGroup, terminalGroup, generalGroup, advanced]
+        let groups = [pill, autoOpen, panelGroup, terminalGroup, actGroup, generalGroup, advanced]
         let content = NSStackView(views: [general] + zip(headers, groups).flatMap { [$0, $1] })
         content.orientation = .vertical
         content.alignment = .leading
@@ -242,7 +291,7 @@ final class SettingsView: NSView {
         for view in content.arrangedSubviews {
             view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
-        for popUp in [agentPopUp, directoryPopUp, hotkeyTargetPopUp, fontPopUp] {
+        for popUp in [agentPopUp, directoryPopUp, hotkeyTargetPopUp, fontPopUp, actCleanupPopUp] {
             popUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
             popUp.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
         }
@@ -258,6 +307,10 @@ final class SettingsView: NSView {
         scrollView.autoresizingMask = [.width, .height]
         scrollView.frame = bounds
         addSubview(scrollView)
+        intro.frame = bounds
+        intro.autoresizingMask = [.width, .height]
+        intro.isHidden = true
+        addSubview(intro)
         let fill = content.widthAnchor.constraint(equalTo: document.widthAnchor, constant: -2 * Self.inset)
         fill.priority = .defaultHigh
         NSLayoutConstraint.activate([
@@ -283,6 +336,9 @@ final class SettingsView: NSView {
         onDoneSwitch.setAccessibilityLabel("Auto-Open when the agent is done")
         focusSwitch.setAccessibilityLabel("Auto-Open takes keyboard focus")
         hotkeyField.setAccessibilityLabel("Hotkey")
+        actHotkeyField.setAccessibilityLabel("Act on Selection hotkey")
+        actSwitch.setAccessibilityLabel("Act on Selection")
+        actCleanupPopUp.setAccessibilityLabel("Close finished Act on Selection sessions")
         for (control, label) in [(foldSwitch, "Fold when clicking outside"), (fadeSwitch, "Fade when not focused"),
                                  (fadeSlider.slider, "Faded opacity"), (hidePillSwitch, "Hide pill when collapsed"),
                                  (fontPopUp, "Terminal font"), (sizeStepper, "Terminal font size"),
@@ -299,14 +355,35 @@ final class SettingsView: NSView {
     /// The page's scrolled content (Poppy Dev's snapshot, DESIGN §12.2).
     var documentView: NSView { scrollView.documentView ?? scrollView }
 
+    private var settingsKeyView: NSView?
+
+    /// The intro's pages are showing in place of the settings.
+    var showsIntro: Bool { !intro.isHidden }
+
+    /// The intro (DESIGN §9.15) or the settings, in place of each other; Tab goes through
+    /// the shown one's controls.
+    func setIntroVisible(_ visible: Bool) {
+        intro.isHidden = !visible
+        scrollView.isHidden = visible
+        if !visible { intro.cancelRecording() }
+        nextKeyView = visible ? intro.firstKeyView : settingsKeyView
+    }
+
+    /// The intro's page changed: Tab starts at its first control.
+    func introPageChanged() {
+        if showsIntro { nextKeyView = intro.firstKeyView }
+    }
+
     /// Tab order with Full Keyboard Access on (rebuilt when the pill size radios change).
     private func linkKeyLoop() {
         let loop: [NSView] = [agentPopUp, directoryPopUp, hotkeyField, hotkeyTargetPopUp] + pillRadios
             + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch,
                foldSwitch, fadeSwitch, fadeSlider.slider, hidePillSwitch,
                fontPopUp, sizeStepper, themePopUp, opacitySlider.slider, cursorPopUp, blinkCheckbox, copySwitch,
-               loginItemsButton, loginSwitch, confirmQuitSwitch, editConfigButton]
-        nextKeyView = loop.first
+               actSwitch, actHotkeyField, actCleanupPopUp, permissionsButton,
+               loginItemsButton, loginSwitch, confirmQuitSwitch, introButton, editConfigButton]
+        settingsKeyView = loop.first
+        nextKeyView = showsIntro ? intro.firstKeyView : loop.first
         for (view, next) in zip(loop, loop.dropFirst()) { view.nextKeyView = next }
         loop.last?.nextKeyView = self
     }
@@ -315,12 +392,13 @@ final class SettingsView: NSView {
 
     /// A row: title (13 pt) and an optional description (11 pt, secondary) on the left,
     /// the control on the right, vertically centered.
-    private static func row(_ title: String, _ description: String?, _ control: NSView)
+    static func row(_ title: String, _ description: String?, _ control: NSView, image: NSImage? = nil)
         -> (view: NSView, title: NSTextField) {
-        row(title, description.map { SettingsLabel.description($0) }, control)
+        row(title, description.map { SettingsLabel.description($0) }, control, image: image)
     }
 
-    private static func row(_ title: String, _ description: NSTextField?, _ control: NSView)
+    /// `image` (an agent's logo) goes left of the title.
+    static func row(_ title: String, _ description: NSTextField?, _ control: NSView, image: NSImage? = nil)
         -> (view: NSView, title: NSTextField) {
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 13)
@@ -331,9 +409,19 @@ final class SettingsView: NSView {
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
+        var leading: NSView = text
+        if let image {
+            let imageView = NSImageView(image: image)
+            imageView.contentTintColor = .labelColor
+            imageView.setContentHuggingPriority(.required, for: .horizontal)
+            let stack = NSStackView(views: [imageView, text])
+            stack.spacing = 8
+            stack.alignment = .centerY
+            leading = stack
+        }
 
         let row = NSView()
-        for view in [text, control] {
+        for view in [leading, control] {
             view.translatesAutoresizingMaskIntoConstraints = false
             row.addSubview(view)
         }
@@ -342,16 +430,16 @@ final class SettingsView: NSView {
         (control as? NSStackView)?.setHuggingPriority(.required, for: .horizontal)  // its own, not the view's
         // The text fills the space left of the control, so a description wraps at that
         // width (and keeps it when its text changes) instead of shrinking to a word.
-        let fillText = text.trailingAnchor.constraint(equalTo: control.leadingAnchor, constant: -16)
+        let fillText = leading.trailingAnchor.constraint(equalTo: control.leadingAnchor, constant: -16)
         fillText.priority = NSLayoutConstraint.Priority(600)
         description?.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true
         let hug = row.heightAnchor.constraint(equalToConstant: 0)
         hug.priority = .fittingSizeCompression
         NSLayoutConstraint.activate([
-            text.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10),
-            text.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -16),
-            text.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            text.topAnchor.constraint(greaterThanOrEqualTo: row.topAnchor, constant: 9),
+            leading.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10),
+            leading.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -16),
+            leading.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            leading.topAnchor.constraint(greaterThanOrEqualTo: row.topAnchor, constant: 9),
             control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
             control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             control.topAnchor.constraint(greaterThanOrEqualTo: row.topAnchor, constant: 6),
@@ -363,7 +451,7 @@ final class SettingsView: NSView {
     }
 
     /// Rows on a rounded card, with inset hairlines between them.
-    private static func group(_ rows: [NSView]) -> NSView {
+    static func group(_ rows: [NSView]) -> NSView {
         var views: [NSView] = []
         for (index, row) in rows.enumerated() {
             if index > 0 { views.append(SeparatorLine()) }
@@ -394,7 +482,7 @@ final class SettingsView: NSView {
 
     /// A bold 13 pt section title over a group, aligned with the rows' text, with an
     /// optional description under it.
-    private static func sectionHeader(_ title: String, _ description: NSTextField? = nil) -> NSView {
+    static func sectionHeader(_ title: String, _ description: NSTextField? = nil) -> NSView {
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 13, weight: .bold)
         label.textColor = .labelColor
@@ -466,6 +554,13 @@ final class SettingsView: NSView {
             hotkeyTargetPopUp.addItems(withTitles: model.hotkeyTargets)
         }
         hotkeyTargetPopUp.selectItem(at: model.hotkeyTarget)
+        actSwitch.state = model.actEnabled ? .on : .off
+        actHotkeyField.show(model.actHotkey, enabled: model.canRecordActHotkey && model.actEnabled,
+                            note: model.canRecordActHotkey ? "Turn on Act on Selection to set it." : nil)
+        actCleanupPopUp.isEnabled = model.actEnabled
+        for title in [actHotkeyTitle, actCleanupTitle] {
+            title?.textColor = model.actEnabled ? .labelColor : .tertiaryLabelColor
+        }
 
         let settings = model.settings
         foldSwitch.state = settings.foldOnClickOutside ? .on : .off
@@ -483,6 +578,7 @@ final class SettingsView: NSView {
         blinkCheckbox.state = settings.cursorBlink ? .on : .off
         copySwitch.state = settings.copyOnSelect ? .on : .off
         confirmQuitSwitch.state = settings.confirmQuit ? .on : .off
+        actCleanupPopUp.selectItem(at: ActCleanup.allCases.firstIndex(of: settings.actCleanup) ?? 0)
 
         let login = model.launchAtLogin
         loginSwitch.state = login.isOn ? .on : .off
@@ -626,6 +722,16 @@ final class SettingsView: NSView {
         onChange?(.cursorStyle(CursorShape.allCases[max(cursorPopUp.indexOfSelectedItem, 0)]))
     }
 
+    @objc private func actCleanupChosen() {
+        onChange?(.actCleanup(ActCleanup.allCases[max(actCleanupPopUp.indexOfSelectedItem, 0)]))
+    }
+
+    @objc private func actChanged() { onActEnabled?(actSwitch.state == .on) }
+
+    @objc private func introButtonClicked(_ sender: NSButton) {
+        if sender === permissionsButton { onCheckPermissions?() } else { onShowIntro?() }
+    }
+
     @objc private func blinkChanged() { onChange?(.cursorBlink(blinkCheckbox.state == .on)) }
     @objc private func openLoginItems() { onChange?(.openLoginItems) }
 
@@ -726,13 +832,19 @@ final class HotkeyField: NSButton {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    func show(_ hotkey: String?, enabled: Bool) {
+    /// `note` says why it's disabled (default: hotkeys are unavailable).
+    func show(_ hotkey: String?, enabled: Bool, note: String? = nil) {
+        let wasEnabled = isEnabled
         shown = hotkey
         isEnabled = enabled
         guard !isRecording else { return }
         title = hotkey ?? "None"
         state = .off
-        if !enabled { showMessage("Hotkeys are unavailable.", error: false) }
+        if !enabled {
+            showMessage(note ?? "Hotkeys are unavailable.", error: false)
+        } else if !wasEnabled {
+            showMessage("Click, then press the new shortcut.", error: false)
+        }
     }
 
     @objc private func clicked() {
@@ -885,6 +997,6 @@ final class PercentSlider: NSStackView {
 }
 
 /// Top-to-bottom document for the settings scroll view.
-private final class FlippedView: NSView {
+final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }

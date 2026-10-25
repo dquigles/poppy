@@ -308,13 +308,16 @@ nonisolated enum AntigravityUsage {
     /// `agy` keeps its login in the Keychain (service "gemini", account "antigravity").
     /// Without -w only the attributes are read, so there's no access prompt.
     private static func requireSignIn() throws {
+        guard isSignedIn() else { throw UsageError.signedOut }
+    }
+
+    /// Also the intro's sign-in check (DESIGN §9.15).
+    static func isSignedIn() -> Bool {
         let spec = LaunchSpec(executable: "/usr/bin/security",
                               args: ["find-generic-password", "-s", "gemini", "-a", "antigravity"],
                               environment: [], currentDirectory: NSHomeDirectory())
-        guard let result = ChildProcess.run(spec, label: "agy login check", timeout: 5),
-              result.exitedNormally, result.status.map({ ($0 >> 8) & 0xff }) == 0 else {
-            throw UsageError.signedOut
-        }
+        guard let result = ChildProcess.run(spec, label: "agy login check", timeout: 5) else { return false }
+        return result.exitedNormally && result.status.map({ ($0 >> 8) & 0xff }) == 0
     }
 
     /// The first stdout line that is `agy`'s JSON answer (dotfiles may print other lines first).

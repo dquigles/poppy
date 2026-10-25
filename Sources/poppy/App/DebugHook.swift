@@ -29,10 +29,13 @@ final class DebugHook {
     static let commandPrefix = "debug-cmd-"
     static let statePrefix = "debug-state-"
     private weak var manager: PillManager?
+    /// Act on Selection's `actCapture` / `actRun` (DESIGN §9.14).
+    private weak var act: ActController?
     private var timer: Timer?
 
-    init(manager: PillManager) {
+    init(manager: PillManager, act: ActController) {
         self.manager = manager
+        self.act = act
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -57,7 +60,7 @@ final class DebugHook {
                 continue
             }
             if command.op != "state" { appLog("debug hook: \(command.op)\(command.index.map { " \($0)" } ?? "")") }
-            let error = manager?.debugRun(command)
+            let error = command.op.hasPrefix("act") ? act?.debugRun(command) : manager?.debugRun(command)
             answer(command, error: error)
         }
     }
@@ -65,6 +68,7 @@ final class DebugHook {
     private func answer(_ command: Command, error: String?) {
         let id = command.id
         var state = manager?.debugState(for: command) ?? [:]
+        state.merge(act?.debugState() ?? [:]) { $1 }
         state["id"] = id
         if let error { state["error"] = error }
         let url = LaunchRequest.directoryURL.appendingPathComponent("\(Self.statePrefix)\(id).json")

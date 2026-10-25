@@ -4,6 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var config = Config()
     private var manager: PillManager?
     private var hotKeys: HotKeyManager?
+    private var actHotKeys: HotKeyManager?
+    private var act: ActController?
     private var statusItem: NSStatusItem?
     /// Poppy Dev only: scripted tests (DESIGN §12.2).
     private var debugHook: DebugHook?
@@ -36,11 +38,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.hotKeys = hotKeys
         manager.hotKeys = hotKeys
+        let act = ActController(manager: manager)
+        self.act = act
+        let actHotKeys = HotKeyManager(spec: config.actHotkey, id: 2, configKey: "actHotkey", defaultSpec: "",
+                                       active: config.actEnabled) { [weak act] in act?.hotkeyPressed() }
+        self.actHotKeys = actHotKeys
+        manager.actHotKeys = actHotKeys
         statusItem = makeStatusItem(menu: manager.statusMenu)
         manager.statusItem = statusItem
-        if AppVariant.isDev { debugHook = DebugHook(manager: manager) }
+        if AppVariant.isDev { debugHook = DebugHook(manager: manager, act: act) }
         for request in pendingRequests { manager.apply(request) }
         pendingRequests = []
+        // The intro (DESIGN §9.15): at the first launch, or back on its permissions page
+        // after its Restart button. Shortly after launch: a frame animation started during
+        // launch never finished (the pill stayed small, still animating).
+        let introPage: IntroPage? = CommandLine.arguments.contains(IntroView.relaunchFlag) ? .permissions
+            : config.introShown ? nil : .welcome
+        if let introPage {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.manager?.showIntro(at: introPage)
+            }
+        }
     }
 
     /// The `poppy` shell command hands Poppy a request file (DESIGN §9.9). Nothing else
@@ -50,6 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (then before `applicationDidFinishLaunching`).
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
+            // `poppy-act` from an Act on Selection session (DESIGN §9.14).
+            if ActRequest.isRequestFile(url) {
+                act?.handle(url)
+                continue
+            }
             guard LaunchRequest.isRequestFile(url) else {
                 appLog("open request ignored (not a poppy command request): \(url.path)")
                 continue

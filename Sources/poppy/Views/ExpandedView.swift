@@ -68,7 +68,18 @@ final class ExpandedView: NSView {
         guard width != sidebarWidth else { return }
         sidebarPreview = 0
         sidebarWidth = width
-        sidebar.isHidden = width == 0
+        sidebar.isHidden = width == 0 || settingsCoversSidebar
+        layoutContent()
+    }
+
+    /// The intro (DESIGN §9.15) takes the sidebar's place too: the settings page spans the
+    /// panel's width and the sidebar hides meanwhile.
+    private(set) var settingsCoversSidebar = false
+
+    func setSettingsCoversSidebar(_ covers: Bool) {
+        guard covers != settingsCoversSidebar else { return }
+        settingsCoversSidebar = covers
+        sidebar.isHidden = covers || sidebarWidth == 0
         layoutContent()
     }
 
@@ -112,7 +123,9 @@ final class ExpandedView: NSView {
         let left = sidebarWidth > 0 ? sidebarWidth : Self.contentInset
         let frame = NSRect(x: left, y: bottom, width: bounds.width - left - Self.contentInset, height: top - bottom)
         contentHost.frame = frame
-        settingsView.frame = frame
+        settingsView.frame = settingsCoversSidebar
+            ? NSRect(x: Self.contentInset, y: bottom, width: bounds.width - 2 * Self.contentInset, height: top - bottom)
+            : frame
         if let confirmView {
             confirmView.frame = confirmFrame
             confirmView.setTerminalFrame(convert(frame, to: confirmView))
@@ -209,6 +222,8 @@ final class HeaderView: NSView {
     private var directoryTitle = ""
     private var path: String?
     private var showsSettings = false
+    /// The title and button while the page shows: "Settings" and Done, or the intro's (DESIGN §9.15).
+    private var settingsTitle = "Settings"
     private var renameField: RenameField?
 
     init(frame: NSRect, title: String) {
@@ -337,13 +352,19 @@ final class HeaderView: NSView {
     /// "Settings" and Done in place of the directory while the settings page shows.
     func setShowsSettings(_ shows: Bool) {
         showsSettings = shows
-        label.stringValue = shows ? "Settings" : directoryTitle
+        label.stringValue = shows ? settingsTitle : directoryTitle
         toolTip = shows ? nil : path
         doneButton.isHidden = !shows
         foldButton.isHidden = shows
         newButton.isHidden = shows
         moreButton.isHidden = shows
         pinButton.isHidden = shows || !pinShown
+    }
+
+    func setSettingsTitle(_ title: String, button: String) {
+        settingsTitle = title
+        doneButton.title = button
+        if showsSettings { label.stringValue = title }
     }
 
     @objc private func done() { onDone?() }

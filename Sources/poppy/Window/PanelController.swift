@@ -186,7 +186,10 @@ final class PanelController: NSObject {
         panel.contentView = glass
         panel.allowsKey = false
         panel.isShowingSettings = { [weak self] in self?.settingsShown == true }
-        panel.onCloseSettings = { [weak self] in self?.closeSettings() }
+        panel.onCloseSettings = { [weak self] returnKey in
+            guard let self else { return }
+            if returnKey, introShown { expandedView.settingsView.intro.next() } else { settingsDone() }
+        }
         panel.onToggleSettings = { [weak self] in self?.toggleSettings() }
         let settings = expandedView.settingsView
         settings.onPillPreset = { [weak self] index in
@@ -212,7 +215,12 @@ final class PanelController: NSObject {
             self?.hotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
         }
         settings.hotkeyField.onEnd = { [weak self] in self?.hotKeys?.endRecording() }
-        expandedView.header.onDone = { [weak self] in self?.closeSettings() }
+        settings.actHotkeyField.onBegin = { [weak self] in self?.manager.actHotKeys?.beginRecording() ?? false }
+        settings.actHotkeyField.onRecord = { [weak self] combo in
+            self?.manager.actHotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
+        }
+        settings.actHotkeyField.onEnd = { [weak self] in self?.manager.actHotKeys?.endRecording() }
+        expandedView.header.onDone = { [weak self] in self?.settingsDone() }
         expandedView.header.onNew = { [weak self] in self?.newSession() }
         expandedView.header.onNewMenu = { [weak self] view in self?.showNewSessionMenu(from: view) }
         expandedView.header.onPin = { [weak self] in self?.togglePin() }
@@ -233,6 +241,10 @@ final class PanelController: NSObject {
             manager.setHotkeyTarget(HotkeyTarget.allCases[index])
             refreshSettings()
         }
+        settings.onActEnabled = { [weak self] on in self?.manager.setActEnabled(on) }
+        settings.onShowIntro = { [weak self] in self?.openIntro() }
+        settings.onCheckPermissions = { [weak self] in self?.openIntro(at: .permissions, single: true) }
+        wireIntro()
 
         // Selector-based observers are removed automatically when self deallocates.
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -372,7 +384,12 @@ final class PanelController: NSObject {
     func collapse() {
         revealIfArmed()
         guard state == .expanded, !isAnimating, !panel.inLiveResize else { return }
-        closeSettings(animated: false, markSeen: false)  // the next expand shows the terminal
+        // The next expand shows the terminal; the intro stays for it (DESIGN §9.15).
+        if introShown {
+            expandedView.settingsView.intro.cancelRecording()
+        } else {
+            closeSettings(animated: false, markSeen: false)
+        }
         expandedView.confirmView?.end(false)  // a click outside cancels closing a session
         afterExpand = nil
         isAnimating = true
@@ -448,6 +465,7 @@ final class PanelController: NSObject {
     /// an auto-open, or a click into it.
     @objc private func panelDidBecomeKey(_ notification: Notification) {
         if !settingsShown { session.markDoneSeen() }  // not seen under the settings page
+        refreshIntro()  // e.g. back from System Settings
         // During an expand the fade completion installs it; this covers an unfocused
         // auto-open that the user clicks into later.
         if state == .expanded, !isAnimating { installClickOutsideMonitor() }  // idempotent
@@ -486,7 +504,7 @@ final class PanelController: NSObject {
             }
             return
         }
-        if hotKeys?.isRecording == true {
+        if hotKeys?.isRecording == true || manager.actHotKeys?.isRecording == true {
             appLog("auto-open: skipped (recording a hotkey)")
             return
         }
@@ -500,7 +518,7 @@ final class PanelController: NSObject {
         }
         // The agent needs the user: the settings page gives way to the terminal (not while
         // Settings… is still opening from the pill). DESIGN §7.15.
-        let closesSettings = settingsShown && state == .expanded && !openingSettings
+        let closesSettings = settingsShown && state == .expanded && !openingSettings && !introShown
         appLog("auto-open: \(state == .collapsed ? "expanding" : closesSettings ? "closed settings" : panel.isKeyWindow ? "already focused" : "focusing")\(opener === session ? "" : ", selecting \(opener.name)")")
         if let index = sessions.firstIndex(where: { $0 === opener }) { select(index) }
         if closesSettings { closeSettings(markSeen: panel.isKeyWindow) }
@@ -525,11 +543,12 @@ final class PanelController: NSObject {
     // MARK: - Sessions (DESIGN §7.17)
 
     /// A session with its default name (or `name`); its agent starts when it's first attached.
-    private func makeSession(command: String, directory: String, name: String? = nil) -> TerminalSession {
+    private func makeSession(command: String, directory: String, name: String? = nil,
+                             startCommand: String? = nil) -> TerminalSession {
         var sessionConfig = config
         sessionConfig.command = command
         sessionConfig.cwd = Config.abbreviate(directory)
-        let new = TerminalSession(config: sessionConfig)
+        let new = TerminalSession(config: sessionConfig, startCommand: startCommand)
         new.customName = name
         new.defaultName = uniqueName(Self.directoryName(new.workingDirectory), for: new)
         wire(new)
@@ -616,11 +635,24 @@ final class PanelController: NSObject {
     var savedPill: SavedPill {
         SavedPill(origin: SavedPoint(x: pillFrame.minX, y: pillFrame.minY),
                   expandedSize: SavedSize(width: expandedSize.width, height: expandedSize.height),
-                  sidebarCollapsed: sidebarRail, sidebarWidth: Double(sidebarWidth), selected: selectedIndex,
+                  sidebarCollapsed: sidebarRail, sidebarWidth: Double(sidebarWidth),
+                  selected: savedSelection,
                   pinned: pinned ? true : nil,
-                  sessions: sessions.map {
+                  sessions: savedSessions.map {
                       SavedSession(command: $0.command, cwd: Config.abbreviate($0.workingDirectory), name: $0.customName)
                   })
+    }
+
+    /// Act on Selection's sessions aren't saved (DESIGN §9.14); a pill with only those is
+    /// dropped at the next launch.
+    private var savedSessions: [TerminalSession] { sessions.filter { !$0.isTransient } }
+
+    /// The selected session among `savedSessions`. Not through `session`: a closing session
+    /// saves the layout before the next one is selected, when `selectedIndex` can be past the end.
+    private var savedSelection: Int {
+        guard sessions.indices.contains(selectedIndex) else { return 0 }
+        let selected = sessions[selectedIndex]
+        return savedSessions.firstIndex { $0 === selected } ?? 0
     }
 
     /// The menu bar's pill list: the selected session's name and the pill's most urgent
@@ -645,7 +677,10 @@ final class PanelController: NSObject {
         stopRevealShadowTracking()
         revealWatchdog?.invalidate()
         revealWatchdog = nil
+        introTimer?.invalidate()
+        expandedView.settingsView.intro.cancelRecording()
         expandedView.settingsView.hotkeyField.cancel()
+        expandedView.settingsView.actHotkeyField.cancel()
         for each in sessions {
             each.onStatusChange = nil
             each.onModelChange = nil
@@ -712,6 +747,20 @@ final class PanelController: NSObject {
         }
     }
 
+    /// Closes `closing` without asking (a finished Act on Selection session, DESIGN §9.14).
+    func closeFinished(_ closing: TerminalSession) {
+        removeSession(closing)
+    }
+
+    /// An Act on Selection session (DESIGN §9.14) in `directory`: added without showing the
+    /// panel (unless `show`), selected unless the user is busy in this panel, never saved;
+    /// `startCommand` the first time, `command` after a restart.
+    func addActSession(command: String, startCommand: String, directory: String, name: String, show: Bool) {
+        if show { manager.used(self) }
+        newSession(command: command, directory: directory, show: show, select: show || !userBusyHere,
+                   name: name, startCommand: startCommand, transient: true)
+    }
+
     /// The hotkey's "most urgent" target: the pill opens on `wanted` (and, if it's already
     /// showing it with the keyboard, collapses as usual).
     func hotkeyPressed(showing wanted: TerminalSession) {
@@ -728,8 +777,11 @@ final class PanelController: NSObject {
 
     /// ＋, ⌘T, New Session: a new session in this pill, selected and shown; by default with
     /// the selected one's agent and folder. `show: false` only adds it (selected or not).
-    private func newSession(command: String? = nil, directory: String? = nil, show: Bool = true, select selects: Bool = true) {
-        let new = makeSession(command: command ?? session.command, directory: directory ?? workingDirectory)
+    private func newSession(command: String? = nil, directory: String? = nil, show: Bool = true, select selects: Bool = true,
+                            name: String? = nil, startCommand: String? = nil, transient: Bool = false) {
+        let new = makeSession(command: command ?? session.command, directory: directory ?? workingDirectory,
+                              name: name, startCommand: startCommand)
+        new.isTransient = transient
         sessions.append(new)
         appLog("session: new \"\(new.name)\" (\(sessions.count) sessions)")
         sessionsChanged()  // the sidebar first, so the new agent starts at its final width
@@ -1274,6 +1326,13 @@ final class PanelController: NSObject {
             guard let key = command.key, let value = command.value else { return "needs key and value" }
             setAutoOpen(key, value)
         case "settings": if command.value ?? true { openSettings() } else { closeSettings() }
+        case "intro":
+            // key: the page; value false ends it like Skip.
+            if command.value ?? true {
+                openIntro(at: command.key.flatMap(IntroPage.init(rawValue:)) ?? .welcome)
+            } else {
+                settingsDone()
+            }
         case "pin": togglePin()
         case "setting":
             // The Panel/Terminal/General cards: key, with value (switches) or width (numbers).
@@ -1297,7 +1356,13 @@ final class PanelController: NSObject {
             guard let path = command.directory else { return "needs a path (directory)" }
             let width = CGFloat(command.width ?? 480)
             let view: NSView
-            if command.name == "settings" {
+            if let name = command.name, name.hasPrefix("intro-"), let page = IntroPage(rawValue: String(name.dropFirst(6))) {
+                // An intro page (name "intro-<page>"), bar included, `width` × 520.
+                let intro = IntroView(frame: NSRect(x: 0, y: 0, width: width, height: 520))
+                intro.show(page)
+                intro.update(introModel)
+                view = intro
+            } else if command.name == "settings" {
                 let page = SettingsView(frame: NSRect(x: 0, y: 0, width: width, height: 2400))
                 page.update(settingsModel)
                 view = page.documentView
@@ -1315,7 +1380,7 @@ final class PanelController: NSObject {
             window.contentView = host
             host.addSubview(view)
             view.frame.size.width = width
-            view.layoutSubtreeIfNeeded()
+            for _ in 0..<4 { view.layoutSubtreeIfNeeded() }  // wrapping labels take their width a pass late
             if command.name == "settings" {
                 view.widthAnchor.constraint(equalToConstant: width).isActive = true
                 view.layoutSubtreeIfNeeded()
@@ -1365,6 +1430,7 @@ final class PanelController: NSObject {
             "animating": isAnimating,
             "key": panel.isKeyWindow,
             "settings": settingsShown,
+            "intro": introShown ? expandedView.settingsView.intro.page.rawValue : "",
             "confirm": expandedView.confirmView != nil,
             // The question is centered on the terminal's area, not shifted.
             "confirmAligned": expandedView.confirmView.map {
@@ -1396,6 +1462,7 @@ final class PanelController: NSObject {
                     "pid": Int(each.agentPid ?? 0),
                     "exited": each.exited,
                     "shown": each.isShown,
+                    "screen": each.screenText,
                 ]
             },
         ]
@@ -1404,7 +1471,8 @@ final class PanelController: NSObject {
     // MARK: - Keep open, fade, hidden pill (DESIGN §6.3, §7.20, §7.21)
 
     /// A click outside folds the panel: the setting is on and this pill isn't pinned.
-    private var foldsOnClickOutside: Bool { config.foldOnClickOutside && !pinned }
+    /// Never during the intro: the user goes to System Settings and back (DESIGN §9.15).
+    private var foldsOnClickOutside: Bool { config.foldOnClickOutside && !pinned && !introShown }
 
     private func togglePin() {
         pinned.toggle()
@@ -2130,7 +2198,7 @@ final class PanelController: NSObject {
         guard !isAnimating else { return }
         expandedView.confirmView?.end(false)
         refreshSettings()
-        if settingsShown {
+        if settingsShown, state == .expanded {
             panel.makeKeyAndOrderFront(nil)
             panel.makeFirstResponder(expandedView.settingsView)
             return
@@ -2152,7 +2220,9 @@ final class PanelController: NSObject {
     /// is key). `markSeen: false` when collapsing: the user never looked at the agent.
     private func closeSettings(animated: Bool = true, markSeen: Bool = true) {
         guard settingsShown else { return }
+        finishIntro()
         expandedView.settingsView.hotkeyField.cancel()
+        expandedView.settingsView.actHotkeyField.cancel()
         settingsShown = false
         expandedView.setSettingsVisible(false, animated: animated && state == .expanded)
         appLog("settings: closed")
@@ -2172,6 +2242,19 @@ final class PanelController: NSObject {
     /// The agent and directory lists are the same as the menu's (DESIGN §9.5, §9.8).
     func refreshSettings() {
         expandedView.settingsView.update(settingsModel)
+        refreshIntro()
+    }
+
+    /// Done, Esc or Skip: the intro opened from the settings page goes back to it; anything
+    /// else closes the page.
+    private func settingsDone() {
+        if introShown, introReturnsToSettings {
+            finishIntro()
+            refreshSettings()
+            if state == .expanded { panel.makeFirstResponder(expandedView.settingsView) }
+            return
+        }
+        closeSettings()
     }
 
     private var settingsModel: SettingsModel {
@@ -2199,7 +2282,165 @@ final class PanelController: NSObject {
             hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true,
             hotkeyTargets: HotkeyTarget.allCases.map(\.title),
             hotkeyTarget: HotkeyTarget.allCases.firstIndex(of: config.hotkeyTarget) ?? 0,
+            actHotkey: manager.actHotKeys?.current?.displayString,
+            canRecordActHotkey: manager.actHotKeys?.canRecord == true, actEnabled: config.actEnabled,
             settings: config, launchAtLogin: LaunchAtLogin.state)
+    }
+
+    // MARK: - Intro (DESIGN §9.15)
+
+    /// The intro shows on the settings page.
+    var introShown: Bool { settingsShown && expandedView.settingsView.showsIntro }
+    /// Opened from the settings page, which comes back when it ends.
+    private var introReturnsToSettings = false
+    /// Re-reads every row once a second while the intro shows.
+    private var introTimer: Timer?
+    /// The login shell's PATH and Antigravity's login, read in the background.
+    private var introSlow: IntroChecks.Slow?
+    private var readingIntroSlow = false
+
+    private func wireIntro() {
+        let intro = expandedView.settingsView.intro
+        intro.onPageChanged = { [weak self] page in self?.introPageShown(page) }
+        intro.onFinish = { [weak self] in self?.settingsDone() }
+        intro.onAgent = { [weak self] index in
+            guard let self, AgentCatalog.builtIns.indices.contains(index) else { return }
+            useAgent(AgentCatalog.builtIns[index])
+        }
+        intro.onActEnabled = { [weak self] on in self?.manager.setActEnabled(on) }
+        intro.onAllowAccessibility = { [weak self] in self?.manager.askForPermission(accessibility: true) }
+        intro.onAllowScreenRecording = { [weak self] in self?.manager.askForPermission(accessibility: false) }
+        intro.onRestart = { [weak self] in self?.manager.relaunchForIntro() }
+        intro.onStatusHooks = { [weak self] on in
+            self?.setStatusHooks(on)
+            self?.refreshSettings()
+        }
+        intro.onAutoOpen = { [weak self] key, on in
+            self?.setAutoOpen(key, on)
+            self?.refreshSettings()
+        }
+        intro.onShowUsage = { [weak self] on in
+            self?.setShowUsage(on)
+            self?.refreshSettings()
+        }
+        intro.onChange = { [weak self] change in self?.manager.applySetting(change) }
+        intro.hotkeyField.onBegin = { [weak self] in self?.hotKeys?.beginRecording() ?? false }
+        intro.hotkeyField.onRecord = { [weak self] combo in
+            self?.hotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
+        }
+        intro.hotkeyField.onEnd = { [weak self] in self?.hotKeys?.endRecording() }
+        intro.actHotkeyField.onBegin = { [weak self] in self?.manager.actHotKeys?.beginRecording() ?? false }
+        intro.actHotkeyField.onRecord = { [weak self] combo in
+            self?.manager.actHotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
+        }
+        intro.actHotkeyField.onEnd = { [weak self] in self?.manager.actHotKeys?.endRecording() }
+    }
+
+    /// The default agent (`command`, for new sessions). The selected session switches too
+    /// if it runs the old default (at first launch, the one agent).
+    private func useAgent(_ profile: AgentProfile) {
+        guard !AgentCatalog.same(profile.command, config.command) else { return }
+        if AgentCatalog.same(session.command, config.command) {
+            switchAgent(to: profile)
+        } else {
+            appLog("agent: \(profile.command) for new sessions")
+            config.command = profile.command
+            _ = Config.saveValue(profile.command, forKey: "command")
+            refreshSettings()
+        }
+    }
+
+    /// The intro from `page`; `single` shows only that page (Check Permissions…). From the
+    /// pill it grows into the page, like Settings….
+    func openIntro(at page: IntroPage = .welcome, single: Bool = false) {
+        revealIfArmed()
+        guard !isAnimating else { return }
+        expandedView.confirmView?.end(false)
+        if !introShown { introReturnsToSettings = settingsShown && state == .expanded }
+        expandedView.settingsView.setIntroVisible(true)
+        expandedView.setSettingsCoversSidebar(true)
+        expandedView.settingsView.intro.show(page, single: single)
+        appLog("intro: shown (\(page.rawValue)\(single ? ", alone" : ""))")
+        if introTimer == nil {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.state == .expanded else { return }
+                    self.refreshIntro()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            introTimer = timer
+        }
+        openSettings()
+        clickOutsideChanged()
+    }
+
+    /// The intro ended (Skip, Done, or the page closing): it won't show at launch again.
+    private func finishIntro() {
+        guard introShown else { return }
+        appLog("intro: finished on \(expandedView.settingsView.intro.page.rawValue)")
+        introTimer?.invalidate()
+        introTimer = nil
+        expandedView.settingsView.setIntroVisible(false)
+        expandedView.setSettingsCoversSidebar(false)
+        expandedView.header.setSettingsTitle("Settings", button: "Done")
+        manager.introFinished()
+        clickOutsideChanged()
+    }
+
+    private func introPageShown(_ page: IntroPage) {
+        let intro = expandedView.settingsView.intro
+        expandedView.header.setSettingsTitle(intro.single ? "Permissions" : "Set Up \(AppVariant.name)",
+                                             button: intro.single ? "Done" : "Skip")
+        expandedView.settingsView.introPageChanged()
+        if page == .agent || page == .finish { readIntroSlowChecks() }
+        refreshIntro()
+    }
+
+    private func readIntroSlowChecks() {
+        guard !readingIntroSlow else { return }
+        readingIntroSlow = true
+        Task {
+            let slow = await Task.detached { IntroChecks.readSlow() }.value
+            readingIntroSlow = false
+            introSlow = slow
+            refreshIntro()
+        }
+    }
+
+    private func refreshIntro() {
+        guard introShown else { return }
+        let intro = expandedView.settingsView.intro
+        agents.refreshIfNeeded(agents.profiles(for: agentConfig),
+                               maxAge: intro.page == .agent ? 5 : AgentCatalog.reprobeInterval)
+        intro.update(introModel)
+    }
+
+    /// Every row's real state (DESIGN §9.15).
+    private var introModel: IntroModel {
+        let introAgents = AgentCatalog.builtIns.map { profile in
+            let installed = agents.isInstalled(profile)
+            return IntroModel.Agent(
+                installed: installed,
+                signedIn: installed == true ? IntroChecks.isSignedIn(profile.command, agy: introSlow?.agySignedIn) : nil,
+                isCurrent: AgentCatalog.same(profile.command, config.command))
+        }
+        return IntroModel(
+            agents: introAgents,
+            hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true,
+            actEnabled: config.actEnabled,
+            actHotkey: manager.actHotKeys?.current?.displayString,
+            canRecordActHotkey: manager.actHotKeys?.canRecord == true,
+            accessibility: SelectionCapture.isTrusted(prompt: false),
+            screenRecording: CGPreflightScreenCaptureAccess(),
+            askedAccessibility: manager.askedAccessibility, askedScreenRecording: manager.askedScreenRecording,
+            canRestart: Bundle.main.bundleURL.pathExtension == "app",
+            claudeInstalled: agents.isInstalled(AgentCatalog.builtIns[0]),
+            actFolderTrusted: ActController.isTrusted(ActController.folder.path),
+            command: IntroChecks.command(path: introSlow?.path),
+            launchAtLogin: LaunchAtLogin.state,
+            statusHooks: config.statusHooks, autoOpenOnInput: config.autoOpenOnInput,
+            autoOpenOnDone: config.autoOpenOnDone, showUsage: config.showUsage)
     }
 
     private func setStatusHooks(_ on: Bool) {

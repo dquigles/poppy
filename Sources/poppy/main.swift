@@ -4,6 +4,10 @@ import AppKit
 if CommandLine.arguments.dropFirst().first == CommandLineClient.flag {
     exit(CommandLineClient.run(Array(CommandLine.arguments.dropFirst(2))))
 }
+// `poppy-act` from an Act on Selection session (DESIGN §9.14).
+if CommandLine.arguments.dropFirst().first == ActClient.flag {
+    exit(ActClient.run(Array(CommandLine.arguments.dropFirst(2))))
+}
 
 let app = NSApplication.shared
 let appDelegate = AppDelegate()  // global strong ref; app.delegate is weak

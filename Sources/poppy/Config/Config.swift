@@ -55,6 +55,15 @@ nonisolated struct Config: Codable, Sendable {
     var copyOnSelect = false
     /// Quit asks first while an agent is working or waiting (DESIGN §4). Default true.
     var confirmQuit = true
+    /// Act on Selection's hotkey (DESIGN §9.14); none by default.
+    var actHotkey = ""
+    /// When finished Act on Selection sessions close (DESIGN §9.14).
+    var actCleanup = ActCleanup.next
+    /// Act on Selection is on: its hotkey is registered (DESIGN §9.14). Missing, it's on
+    /// when a hotkey was already set.
+    var actEnabled = false
+    /// The intro was finished or skipped, so it doesn't show at launch (DESIGN §9.15).
+    var introShown = false
 
     static let inactiveOpacityRange = 0.2...0.9
     static let fontSizeRange = 9.0...24.0
@@ -93,6 +102,10 @@ nonisolated struct Config: Codable, Sendable {
         cursorBlink = (try? c.decodeIfPresent(Bool.self, forKey: .cursorBlink)) ?? true
         copyOnSelect = (try? c.decodeIfPresent(Bool.self, forKey: .copyOnSelect)) ?? false
         confirmQuit = (try? c.decodeIfPresent(Bool.self, forKey: .confirmQuit)) ?? true
+        actHotkey = (try? c.decodeIfPresent(String.self, forKey: .actHotkey)) ?? ""
+        actCleanup = (try? c.decodeIfPresent(ActCleanup.self, forKey: .actCleanup)) ?? .next
+        actEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .actEnabled)) ?? !actHotkey.isEmpty
+        introShown = (try? c.decodeIfPresent(Bool.self, forKey: .introShown)) ?? false
         // A bad "agents" entry must not discard the rest of the file: drop the whole list.
         do {
             agents = try c.decodeIfPresent([AgentProfile].self, forKey: .agents)?.filter {
@@ -144,11 +157,6 @@ nonisolated struct Config: Codable, Sendable {
             config.command = defaultCommand
         }
         return config
-    }
-
-    /// Saves "hotkey" (DESIGN §8.1).
-    static func saveHotkey(_ spec: String) -> Bool {
-        saveValue(spec, forKey: "hotkey")
     }
 
     /// Writes only `key` into config.json, keeping every other key and value as the
@@ -250,6 +258,21 @@ nonisolated enum TerminalTheme: String, Codable, Sendable, CaseIterable {
         case .dark: "Dark"
         case .light: "Light"
         case .system: "Follow system"
+        }
+    }
+}
+
+/// When a finished Act on Selection session (done, never looked at) closes (DESIGN §9.14).
+nonisolated enum ActCleanup: String, Codable, Sendable, CaseIterable {
+    case next, timer, keep
+
+    static let delay: TimeInterval = 5 * 60
+
+    var title: String {
+        switch self {
+        case .next: "When the next one starts"
+        case .timer: "5 minutes after it's done"
+        case .keep: "Never"
         }
     }
 }

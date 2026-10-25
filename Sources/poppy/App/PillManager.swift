@@ -19,6 +19,10 @@ final class PillManager: NSObject {
     weak var hotKeys: HotKeyManager? {
         didSet { hotKeys?.onComboChanged = { [weak self] in self?.pills.forEach { $0.refreshSettings() } } }
     }
+    /// Act on Selection's hotkey (DESIGN §9.14), recorded on the same settings page.
+    weak var actHotKeys: HotKeyManager? {
+        didSet { actHotKeys?.onComboChanged = { [weak self] in self?.pills.forEach { $0.refreshSettings() } } }
+    }
     /// The menu bar item's menu, rebuilt each time it opens (DESIGN §7.12).
     private(set) lazy var statusMenu: NSMenu = {
         let menu = NSMenu()
@@ -376,6 +380,66 @@ final class PillManager: NSObject {
         }
     }
 
+    /// Act on Selection on or off (DESIGN §9.14): its hotkey is registered only while on.
+    func setActEnabled(_ on: Bool) {
+        guard on != config.actEnabled else { return }
+        config.actEnabled = on
+        actHotKeys?.setActive(on)
+        appLog("act: \(on ? "on" : "off")")
+        save(on, "actEnabled")
+        pills.forEach { $0.refreshSettings() }
+    }
+
+    // MARK: - Intro (DESIGN §9.15)
+
+    /// The permission was asked for once this run: the intro's button opens System Settings.
+    private(set) var askedAccessibility = false
+    private(set) var askedScreenRecording = false
+
+    /// The intro in the most recent pill (a new one if there's none).
+    func showIntro(at page: IntroPage = .welcome) {
+        (recent ?? newPill(show: false)).openIntro(at: page)
+    }
+
+    /// The first time, macOS's own question (it also lists Poppy in System Settings);
+    /// after that, the Privacy & Security pane.
+    func askForPermission(accessibility: Bool) {
+        if accessibility ? askedAccessibility : askedScreenRecording {
+            applySetting(.openPrivacySettings(accessibility ? "Accessibility" : "ScreenCapture"))
+        } else if accessibility {
+            askedAccessibility = true
+            _ = SelectionCapture.isTrusted(prompt: true)
+        } else {
+            askedScreenRecording = true
+            CGRequestScreenCaptureAccess()
+        }
+        appLog("intro: asked for \(accessibility ? "Accessibility" : "Screen Recording")")
+        pills.forEach { $0.refreshSettings() }
+    }
+
+    func introFinished() {
+        guard !config.introShown else { return }
+        config.introShown = true
+        save(true, "introShown")
+    }
+
+    /// Restart Poppy (macOS may only see a new Screen Recording grant after one): a shell
+    /// opens it again a second after it quits, on the intro's permissions page.
+    func relaunchForIntro() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep 1; /usr/bin/open -a \"$0\" --args \(IntroView.relaunchFlag)",
+                             Bundle.main.bundlePath]
+        do {
+            try process.run()
+        } catch {
+            appLog("intro: couldn't relaunch: \(error)")
+            return
+        }
+        appLog("intro: relaunching")
+        NSApp.terminate(nil)
+    }
+
     /// The Panel, Terminal and General cards (DESIGN §7.9): applied at once to every pill
     /// and session, saved to config.json, and every settings page refreshed.
     func applySetting(_ change: SettingsChange) {
@@ -429,6 +493,12 @@ final class PillManager: NSObject {
         case .confirmQuit(let on):
             config.confirmQuit = on
             save(on, "confirmQuit")
+        case .actCleanup(let cleanup):
+            config.actCleanup = cleanup
+            save(cleanup.rawValue, "actCleanup")
+        case .openPrivacySettings(let pane):
+            let url = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_" + pane
+            if let url = URL(string: url) { NSWorkspace.shared.open(url) }
         case .launchAtLogin(let on):
             LaunchAtLogin.set(on)
         case .openLoginItems:
@@ -467,6 +537,27 @@ final class PillManager: NSObject {
     // MARK: - Hidden pills (DESIGN §7.21)
 
     private var allHidden: Bool { !pills.isEmpty && pills.allSatisfy(\.isPillHidden) }
+
+    /// An Act on Selection session (DESIGN §9.14) in the most recent pill (a new pill if
+    /// there's none), opened only if `show`. After a restart it's a plain `claude`.
+    func startActSession(command: String, directory: String, name: String, show: Bool) {
+        if config.actCleanup == .next { closeFinishedActSessions() }
+        let pill = recent ?? newPill(show: false)
+        pill.addActSession(command: "claude", startCommand: command, directory: directory, name: name, show: show)
+        saveLayout()
+    }
+
+    /// Act on Selection sessions that are done and were never looked at (DESIGN §9.14), done
+    /// at least `age` ago; working, waiting or opened ones are never closed.
+    func closeFinishedActSessions(age: TimeInterval = 0) {
+        for pill in pills {
+            for session in pill.allSessions where session.isTransient && !session.wasSeen && session.status == .done {
+                guard let doneAt = session.doneAt, Date().timeIntervalSince(doneAt) >= age else { continue }
+                appLog("act: closing finished \"\(session.name)\"")
+                pill.closeFinished(session)
+            }
+        }
+    }
 
     /// A pill hid or showed: the menu bar icon, and App Nap held off while all are hidden.
     func pillVisibilityChanged() {

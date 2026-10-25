@@ -60,7 +60,8 @@ final class GlassPanel: NSPanel {
 
     /// The settings page is shown: plain Esc and Return close it (DESIGN §6.2, §7.9).
     var isShowingSettings: (() -> Bool)?
-    var onCloseSettings: (() -> Void)?
+    /// Esc or Return (`returnKey`) on the settings page; Return is Next in the intro.
+    var onCloseSettings: ((_ returnKey: Bool) -> Void)?
     /// ⌘, opens or closes the settings page.
     var onToggleSettings: (() -> Void)?
     /// ⌘T, ⌘W and ⌘1–⌘9 (the nth session); PanelController ignores them where they don't apply.
@@ -85,7 +86,7 @@ final class GlassPanel: NSPanel {
     override func sendEvent(_ event: NSEvent) {
         if guarded(event) { return }
         if closesSettings(event) {
-            onCloseSettings?()
+            onCloseSettings?(event.keyCode != 53)
             return
         }
         super.sendEvent(event)
@@ -163,7 +164,7 @@ final class GlassPanel: NSPanel {
         // ⌘ shortcuts (e.g. ⌘V into a permission prompt) are covered by the key guard too.
         if ignoringKeys { return true }
         if closesSettings(event) {
-            onCloseSettings?()
+            onCloseSettings?(event.keyCode != 53)
             return true
         }
         let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])

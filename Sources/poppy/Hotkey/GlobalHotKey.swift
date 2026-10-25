@@ -4,10 +4,13 @@ import Carbon
 /// System-wide hotkey via Carbon RegisterEventHotKey: works while any app is
 /// frontmost and needs no Accessibility permission (DESIGN §11). The event handler
 /// is installed once; the combo can be registered, unregistered and changed live.
-/// Kept alive by HotKeyManager for the app's lifetime.
+/// Kept alive by its HotKeyManager for the app's lifetime.
+/// Each instance has its own `id`, so several can be registered: every handler sees every
+/// hotkey event and passes on the ones that aren't its own.
 final class GlobalHotKey {
     nonisolated static let signature: OSType = 0x506F_7079  // 'Popy'
-    nonisolated static let hotKeyID: UInt32 = 1
+    /// 1: the panel hotkey, 2: Act on Selection (DESIGN §9.14).
+    nonisolated let id: UInt32
 
     private let action: @MainActor () -> Void
     private var handlerRef: EventHandlerRef?
@@ -16,12 +19,13 @@ final class GlobalHotKey {
     private(set) var registered: HotKeyCombo?
 
     /// Installs the Carbon event handler. Returns nil if that fails.
-    init?(action: @escaping @MainActor () -> Void) {
+    init?(id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
+        self.id = id
         self.action = action
         var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let status = InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &eventSpec,
                                          Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
-        appLog("hotkey handler installed: OSStatus \(status)")
+        appLog("hotkey handler \(id) installed: OSStatus \(status)")
         guard status == noErr else { return nil }
     }
 
@@ -29,9 +33,9 @@ final class GlobalHotKey {
     @discardableResult
     func register(_ combo: HotKeyCombo) -> OSStatus {
         unregister()
-        let id = EventHotKeyID(signature: Self.signature, id: Self.hotKeyID)
+        let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)
         var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(combo.keyCode, combo.modifiers, id, GetApplicationEventTarget(), 0, &ref)
+        let status = RegisterEventHotKey(combo.keyCode, combo.modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref)
         appLog("hotkey \(combo.spec) registered: OSStatus \(status)")
         if status == noErr {
             hotKeyRef = ref
@@ -58,11 +62,12 @@ private nonisolated func hotKeyHandler(_ next: EventHandlerCallRef?, _ event: Ev
     var id = EventHotKeyID()
     let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                                    nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
-    guard status == noErr, id.signature == GlobalHotKey.signature, id.id == GlobalHotKey.hotKeyID else {
-        return OSStatus(eventNotHandledErr)
-    }
     // Unwrap outside the closure: the raw pointer isn't Sendable, the main-actor object is.
     let hotKey = Unmanaged<GlobalHotKey>.fromOpaque(userData).takeUnretainedValue()
+    // Another instance's hotkey: the next handler gets it.
+    guard status == noErr, id.signature == GlobalHotKey.signature, id.id == hotKey.id else {
+        return OSStatus(eventNotHandledErr)
+    }
     MainActor.assumeIsolated { hotKey.fire() }
     return noErr
 }

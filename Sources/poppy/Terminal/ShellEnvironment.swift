@@ -60,8 +60,14 @@ nonisolated enum ShellEnvironment {
         for (key, value) in defaults where env[key]?.isEmpty ?? true {
             env[key] = value
         }
-        // Don't leak the launching terminal's identity or a parent Claude Code session.
-        for key in ["POPPY_COMMAND", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"] {
+        // Don't leak the launching terminal's identity or a parent Claude Code session (Poppy
+        // Dev started from a session in Poppy: its agents ran as that session's children and
+        // reported their status to the other Poppy's pill, whose POPPY_STATUS_FILE came first;
+        // TerminalSession adds this session's own). Settings like CLAUDE_CODE_USE_BEDROCK stay.
+        for key in ["POPPY_COMMAND", "POPPY_STATUS_FILE", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+                    "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED",
+                    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_EXECPATH",
+                    "CLAUDE_PID", "CLAUDE_EFFORT"] {
             env[key] = nil
         }
         return env.map { "\($0.key)=\($0.value)" }

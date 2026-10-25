@@ -33,7 +33,7 @@ final class AgentCatalog {
         AgentProfile(name: "opencode", command: "opencode"),
     ]
     private nonisolated static let probeTimeout: TimeInterval = 5
-    private static let reprobeInterval: TimeInterval = 60
+    static let reprobeInterval: TimeInterval = 60
 
     /// The command Poppy launched with, kept in the list after switching away from it.
     private let launchCommand: String
@@ -76,11 +76,12 @@ final class AgentCatalog {
         return installed.contains(word)
     }
 
-    /// Probes in the background if none has run, the last is over a minute old, or the
-    /// list has words not yet probed. The result shows the next time the menu opens.
-    func refreshIfNeeded(_ profiles: [AgentProfile]) {
+    /// Probes in the background if none has run, the last is older than `maxAge` (a minute;
+    /// the intro asks for less, so an install shows), or the list has words not yet probed.
+    /// The result shows the next time the menu opens.
+    func refreshIfNeeded(_ profiles: [AgentProfile], maxAge: TimeInterval = reprobeInterval) {
         let words = Set(profiles.compactMap(\.probeWord))
-        let stale = lastProbe.map { Date().timeIntervalSince($0) > Self.reprobeInterval } ?? true
+        let stale = lastProbe.map { Date().timeIntervalSince($0) > maxAge } ?? true
         guard !probing, !words.isEmpty, stale || !words.isSubset(of: probedWords) else { return }
         probing = true
         let spec = ShellEnvironment.probeSpec(script: Self.probeScript(for: words))

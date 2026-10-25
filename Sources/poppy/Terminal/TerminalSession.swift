@@ -19,6 +19,12 @@ final class TerminalSession {
     private var currentView: PoppyTerminalView?
 
     var command: String { config.command }
+    /// Not in the saved layout (an Act on Selection session, DESIGN §9.14).
+    var isTransient = false
+    /// The user has looked at it (the panel key on it); set where "done" is marked seen.
+    private(set) var wasSeen = false
+    /// When it last turned "done", for closing finished Act on Selection sessions.
+    private(set) var doneAt: Date?
     /// Absolute and normalized (DESIGN §9.8).
     var workingDirectory: String { Config.normalize(spec.currentDirectory) }
 
@@ -51,10 +57,20 @@ final class TerminalSession {
     var statusFilePath: String? { statusFile?.path }
     var agentPid: pid_t? { currentView?.process?.shellPid }
     var isShown: Bool { currentView?.superview != nil }
+    /// The visible screen's text, for Poppy Dev's debug hook (DESIGN §12.2).
+    var screenText: String {
+        guard let terminal = currentView?.getTerminal() else { return "" }
+        return (0..<terminal.rows).compactMap { terminal.getLine(row: $0)?.translateToString(trimRight: true) }
+            .joined(separator: "\n")
+    }
 
-    init(config: Config) {
+    /// `startCommand` runs the first time only (an Act on Selection session's first message);
+    /// a restart, and the saved layout, use `config.command`.
+    init(config: Config, startCommand: String? = nil) {
         self.config = config
-        spec = Self.launchSpec(for: config)
+        var first = config
+        if let startCommand { first.command = startCommand }
+        spec = Self.launchSpec(for: first)
         logSpec()
         Self.removeStaleStatusFiles()
         Attachments.removeOldFiles()
@@ -286,11 +302,13 @@ extension TerminalSession {
         guard new != status else { return }
         appLog("status: \(status.rawValue) -> \(new.rawValue)")
         status = new
+        if new == .done { doneAt = Date() }
         onStatusChange?(new)
     }
 
     /// The user has seen the panel: "done" goes back to idle.
     func markDoneSeen() {
+        wasSeen = true
         if status == .done { setStatus(.idle) }
     }
 

@@ -1,8 +1,9 @@
 import AppKit
 import Carbon
 
-/// Owns the global hotkey and the current combo; the settings page's shortcut field
-/// records a new one through it (DESIGN §11, §11.2). Owned by AppDelegate.
+/// Owns a global hotkey and its current combo; the settings page's shortcut field
+/// records a new one through it (DESIGN §11, §11.2). Owned by AppDelegate: one for the
+/// panel hotkey, one for Act on Selection (§9.14), each saved under its own config key.
 final class HotKeyManager {
     enum RecordResult {
         case saved
@@ -12,28 +13,50 @@ final class HotKeyManager {
     }
 
     private let hotKey: GlobalHotKey?
+    /// config.json's key for the combo ("hotkey" or "actHotkey").
+    private let configKey: String
     /// The combo the user chose. Registered whenever no recording is in progress
     /// (unless registration failed at launch).
     private(set) var current: HotKeyCombo?
     /// True while the shortcut field is recording (auto-open waits, DESIGN §7.15).
     private(set) var isRecording = false
+    /// Off (Act on Selection turned off, DESIGN §9.14), the combo is kept but not registered.
+    private(set) var isActive: Bool
     /// Called after every recording ends, so the settings page shows the current combo.
     var onComboChanged: (() -> Void)?
 
-    init(spec: String, action: @escaping @MainActor () -> Void) {
-        hotKey = GlobalHotKey(action: action)
+    init(spec: String, id: UInt32 = 1, configKey: String = "hotkey", defaultSpec: String = Config.defaultHotkey,
+         active: Bool = true, action: @escaping @MainActor () -> Void) {
+        hotKey = GlobalHotKey(id: id, action: action)
+        self.configKey = configKey
+        isActive = active
         // An empty spec means no hotkey (Poppy Dev's default, DESIGN §12.1); one can still be recorded.
         guard !spec.trimmingCharacters(in: .whitespaces).isEmpty else {
-            appLog("no hotkey set")
+            appLog("no \(configKey) set")
             return
         }
         var combo = HotKeyCombo(spec: spec)
         if combo == nil {
-            appLog("invalid hotkey \"\(spec)\", using \(Config.defaultHotkey)")
-            combo = HotKeyCombo(spec: Config.defaultHotkey)
+            appLog("invalid \(configKey) \"\(spec)\", using \(defaultSpec.isEmpty ? "none" : defaultSpec)")
+            combo = HotKeyCombo(spec: defaultSpec)
         }
-        if let hotKey, let combo, hotKey.register(combo) == noErr {
+        if !active {
             current = combo
+            appLog("\(configKey) not registered (turned off)")
+        } else if let hotKey, let combo, hotKey.register(combo) == noErr {
+            current = combo
+        }
+    }
+
+    /// Registers the combo (on) or only keeps it (off).
+    func setActive(_ on: Bool) {
+        guard on != isActive else { return }
+        isActive = on
+        guard let hotKey, !isRecording else { return }
+        if !on {
+            hotKey.unregister()
+        } else if let current, hotKey.register(current) != noErr {
+            self.current = nil  // don't show a hotkey that doesn't work
         }
     }
 
@@ -60,7 +83,7 @@ final class HotKeyManager {
             return .failed("\(combo.displayString) couldn't be registered (OSStatus \(status)). Try another.")
         }
         current = combo
-        if Config.saveHotkey(combo.spec) {
+        if Config.saveValue(combo.spec, forKey: configKey) {
             endRecording()
             return .saved
         }
@@ -74,7 +97,7 @@ final class HotKeyManager {
     func endRecording() {
         guard isRecording else { return }
         isRecording = false
-        if let hotKey, let current, hotKey.registered != current,
+        if isActive, let hotKey, let current, hotKey.registered != current,
            hotKey.register(current) != noErr {
             self.current = nil  // don't show a hotkey that doesn't work
         }
