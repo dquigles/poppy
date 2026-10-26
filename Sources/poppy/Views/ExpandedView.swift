@@ -209,6 +209,8 @@ final class HeaderView: NSView {
     var onNewMenu: ((NSView) -> Void)?
     var onPin: (() -> Void)?
     var onFold: (() -> Void)?
+    /// A click (not a drag) on the title: the folder menu, shown from the view (DESIGN §7.9).
+    var onTitleClick: ((NSView) -> Void)?
 
     private var drag = WindowDrag()
     private let label = NSTextField(labelWithString: "")
@@ -236,6 +238,8 @@ final class HeaderView: NSView {
         label.lineBreakMode = .byTruncatingMiddle  // long directories (DESIGN §9.8)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.setAccessibilityRole(.popUpButton)  // a click opens the folder menu
+        label.setAccessibilityHelp("Working directory")
         addSubview(label)
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -407,6 +411,9 @@ final class HeaderView: NSView {
     override func mouseUp(with event: NSEvent) {
         if drag.end() {
             controller?.headerDragEnded()
+        } else if !showsSettings, renameField == nil, !label.isHidden,
+                  label.frame.insetBy(dx: -4, dy: -4).contains(convert(event.locationInWindow, from: nil)) {
+            onTitleClick?(label)
         }
     }
 

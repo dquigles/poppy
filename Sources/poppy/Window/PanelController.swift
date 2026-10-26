@@ -225,6 +225,7 @@ final class PanelController: NSObject {
         expandedView.header.onNewMenu = { [weak self] view in self?.showNewSessionMenu(from: view) }
         expandedView.header.onPin = { [weak self] in self?.togglePin() }
         expandedView.header.onFold = { [weak self] in self?.collapse() }
+        expandedView.header.onTitleClick = { [weak self] view in self?.showDirectoryMenu(from: view) }
         settings.onChange = { [weak self] change in self?.manager.applySetting(change) }
         panel.onZoom = { [weak self] step in self?.manager.zoomTerminal(step) }
         glass.onHoverChange = { [weak self] in self?.updateFade() }
@@ -2035,6 +2036,15 @@ final class PanelController: NSObject {
             submenu.addItem(item)
         }
         return submenu
+    }
+
+    /// A click on the header's title: the selected session's folder, the recents, Choose
+    /// Folder… (DESIGN §7.9). Not during an animation or under the close question.
+    private func showDirectoryMenu(from view: NSView) {
+        guard state == .expanded, !isAnimating, expandedView.confirmView == nil else { return }
+        let menu = makeDirectoryMenu()
+        menu.insertItem(.sectionHeader(title: "Working Directory"), at: 0)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.isFlipped ? view.bounds.height + 4 : -4), in: view)
     }
 
     /// Recent directories (the current one checked), then Choose Folder… (DESIGN §9.8).
