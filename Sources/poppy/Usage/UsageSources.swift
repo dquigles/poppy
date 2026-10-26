@@ -137,6 +137,11 @@ nonisolated enum ClaudeUsage {
         if object["is_error"] as? Bool == true {
             throw UsageError.failed(firstLine(text) ?? "claude /usage failed")
         }
+        return try report(fromText: text)
+    }
+
+    /// The limit lines of `/usage`'s text.
+    static func report(fromText text: String, now: Date = Date()) throws -> UsageReport {
         var short: UsageWindow?
         var long: UsageWindow?
         for line in text.split(separator: "\n") {
@@ -144,7 +149,7 @@ nonisolated enum ClaudeUsage {
             guard let match = linePattern.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
                   let title = Range(match.range(at: 1), in: line).map({ String(line[$0]) }),
                   let used = Range(match.range(at: 2), in: line).flatMap({ Double(line[$0]) }) else { continue }
-            let resets = Range(match.range(at: 3), in: line).flatMap { resetDate(String(line[$0])) }
+            let resets = Range(match.range(at: 3), in: line).flatMap { resetDate(String(line[$0]), now: now) }
             if title == "Current session" {
                 short = UsageWindow(usedPercent: used, resetsAt: resets, minutes: 300)
             } else {
@@ -160,7 +165,7 @@ nonisolated enum ClaudeUsage {
             }
             throw UsageError.unavailable("no subscription limits reported (not signed in, or an API-key login)")
         }
-        return UsageReport(short: short, long: long, fetchedAt: Date())
+        return UsageReport(short: short, long: long, fetchedAt: now)
     }
 
     /// "Current session: 72% used · resets Sep 30 at 2:59pm (America/Chicago)" (U+00B7).
@@ -247,6 +252,11 @@ nonisolated enum CodexUsage {
               let response = response(in: result.output) else {
             throw UsageError.failed("no answer from codex app-server")
         }
+        return try report(fromResponse: response)
+    }
+
+    /// The JSON-RPC response to `account/rateLimits/read`.
+    static func report(fromResponse response: [String: Any]) throws -> UsageReport {
         if let error = response["error"] as? [String: Any] {
             throw UsageError.failed(error["message"] as? String ?? "codex app-server error")
         }
@@ -294,6 +304,11 @@ nonisolated enum AntigravityUsage {
               let response = response(in: result.output) else {
             throw UsageError.noAnswer
         }
+        return try report(fromResponse: response)
+    }
+
+    /// `agy -p /usage --output-format json`'s answer.
+    static func report(fromResponse response: [String: Any]) throws -> UsageReport {
         guard response["status"] as? String == "SUCCESS" else {
             let text = (response["response"] as? String ?? "").split(separator: "\n").first
                 .map { String($0.trimmingCharacters(in: .whitespaces).prefix(120)) } ?? ""

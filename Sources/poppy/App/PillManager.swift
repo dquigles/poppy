@@ -351,6 +351,7 @@ final class PillManager: NSObject {
         case "autoOpenOnInput": config.autoOpenOnInput = on
         case "autoOpenOnDone": config.autoOpenOnDone = on
         case "autoOpenFocus": config.autoOpenFocus = on
+        case "foldOnPrompt": config.foldOnPrompt = on
         default: return
         }
         appLog("auto-open: \(key) = \(on)")

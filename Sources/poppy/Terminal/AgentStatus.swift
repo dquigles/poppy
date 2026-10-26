@@ -30,7 +30,30 @@ nonisolated enum StatusHooks {
     /// Antigravity's PreInvocation hook: also records the model being called, which picks
     /// the usage ring's group (DESIGN §9.12). Checks for Poppy before reading stdin, so it
     /// reads nothing in the Antigravity IDE or desktop app, which share the plugin.
-    static let antigravityInvocationCommand = #"[ -f "$POPPY_STATUS_FILE" ] || exit 0; printf %s working > "$POPPY_STATUS_FILE"; m=$(grep -o '"modelName":"[^"]*"' | head -n 1 | cut -d '"' -f 4); [ -n "$m" ] && printf %s "$m" > "$POPPY_STATUS_FILE.model"; exit 0"#
+    /// Also records the conversation id, like `conversationCommand` (DESIGN §9.16; the key
+    /// names are guessed from the `agy` binary, not seen in a hook's input).
+    static let antigravityInvocationCommand = #"[ -f "$POPPY_STATUS_FILE" ] || exit 0; printf %s working > "$POPPY_STATUS_FILE"; i=$(cat); m=$(printf %s "$i" | grep -o '"modelName":"[^"]*"' | head -n 1 | cut -d '"' -f 4); [ -n "$m" ] && printf %s "$m" > "$POPPY_STATUS_FILE.model"; c=$(printf %s "$i" | grep -E -o '"(conversationId|conversation_id|cascadeId)" *: *"[^"]*"' | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/'); [ -n "$c" ] && printf %s "$c" > "$POPPY_STATUS_FILE.conversation"; exit 0"#
+
+    /// Marker of the conversation entry in shared config files (Codex).
+    static let conversationMarker = "POPPY_STATUS_FILE.conversation"
+
+    /// Records the conversation id from the hook's JSON input (its `session_id`) into
+    /// `$POPPY_STATUS_FILE.conversation`, so the next launch resumes it (DESIGN §9.16).
+    static let conversationCommand = #"[ -f "$POPPY_STATUS_FILE" ] || exit 0; c=$(grep -E -o '"session_id" *: *"[^"]*"' | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/'); [ -n "$c" ] && printf %s "$c" > "$POPPY_STATUS_FILE.conversation"; exit 0"#
+
+    /// `command` resuming conversation `id` (DESIGN §9.16), or nil if its agent can't (or
+    /// the id has characters that would need quoting).
+    static func resuming(_ command: String, conversation id: String) -> String? {
+        guard !id.isEmpty, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+        else { return nil }
+        switch Harness(command: command) {
+        case .claude: return insertAfterExecutable(command, "--resume " + id)
+        case .codex: return insertAfterExecutable(command, "resume " + id)
+        case .antigravity: return insertAfterExecutable(command, "--conversation " + id)
+        case .opencode: return insertAfterExecutable(command, "--session " + id)
+        case .shell, .other: return nil
+        }
+    }
 
     /// Readies status reporting for `command`'s harness and returns the command to run:
     /// Claude gets `--settings <Poppy's hooks file>` right after the executable word
@@ -47,10 +70,13 @@ nonisolated enum StatusHooks {
             return insertAfterExecutable(command, "--settings '" + path.replacingOccurrences(of: "'", with: "'\\''") + "'")
         case .codex:
             let codexHome = directory(fromEnvironment: "CODEX_HOME") ?? home.appendingPathComponent(".codex")
-            mergeHooks(into: codexHome.appendingPathComponent("hooks.json"), events: [
+            let statuses: [(String, AgentStatus)] = [
                 ("SessionStart", .idle), ("UserPromptSubmit", .working), ("PreToolUse", .working),
                 ("PostToolUse", .working), ("PermissionRequest", .waiting), ("Stop", .done),
-            ])
+            ]
+            mergeHooks(into: codexHome.appendingPathComponent("hooks.json"),
+                       entries: statuses.map { ($0.0, Self.command($0.1), marker) }
+                           + [("UserPromptSubmit", conversationCommand, conversationMarker)])
             // Hooks run in the process that owns the thread. Codex's shared app-server daemon
             // was started outside Poppy and lacks POPPY_STATUS_FILE, so run Codex in-process.
             if !command.contains("--no-daemon") { return insertAfterExecutable(command, "--no-daemon") }
@@ -113,22 +139,9 @@ nonisolated enum StatusHooks {
     /// Written on every Claude start (init, switch, restart). `Notification` is scoped to `permission_prompt`, so
     /// Claude's ~60 s idle notification never reads as "needs input".
     private static func writeClaudeSettings() -> String? {
-        let entry = { (matcher: String, status: AgentStatus) -> [String: Any] in
-            ["matcher": matcher, "hooks": [["type": "command", "command": command(status)]]]
-        }
-        let settings: [String: Any] = ["hooks": [
-            // Not "compact": SessionStart also fires after auto-compaction, mid-turn.
-            "SessionStart": [entry("startup|resume|clear", .idle)],
-            "UserPromptSubmit": [entry(".*", .working)],
-            "PreToolUse": [entry(".*", .working)],
-            "PostToolUse": [entry(".*", .working)],
-            "Notification": [entry("permission_prompt", .waiting)],
-            "PermissionRequest": [entry(".*", .waiting)],
-            "Stop": [entry(".*", .done)],
-        ]]
         let url = ConfigPaths.directory.appendingPathComponent("claude-hooks.json")
         do {
-            let data = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+            let data = try JSONSerialization.data(withJSONObject: claudeSettings, options: [.prettyPrinted, .sortedKeys])
             try ConfigPaths.write(data, to: url)
             return url.path
         } catch {
@@ -137,13 +150,32 @@ nonisolated enum StatusHooks {
         }
     }
 
+    static var claudeSettings: [String: Any] {
+        let entry = { (matcher: String, status: AgentStatus) -> [String: Any] in
+            ["matcher": matcher, "hooks": [["type": "command", "command": command(status)]]]
+        }
+        // A conversation exists once a prompt is sent, so it can be resumed (DESIGN §9.16).
+        let prompt: [String: Any] = ["matcher": ".*", "hooks": [["type": "command", "command": command(.working)],
+                                                                ["type": "command", "command": conversationCommand]]]
+        return ["hooks": [
+            // Not "compact": SessionStart also fires after auto-compaction, mid-turn.
+            "SessionStart": [entry("startup|resume|clear", .idle)],
+            "UserPromptSubmit": [prompt],
+            "PreToolUse": [entry(".*", .working)],
+            "PostToolUse": [entry(".*", .working)],
+            "Notification": [entry("permission_prompt", .waiting)],
+            "PermissionRequest": [entry(".*", .waiting)],
+            "Stop": [entry(".*", .done)],
+        ]]
+    }
+
     // MARK: - Codex: additive merge into a shared hooks file
 
-    /// Appends one `{matcher: ".*", hooks: [Poppy's command]}` entry per event unless an
-    /// entry for that event already contains `marker`. Never removes or reorders anything
+    /// Appends one `{matcher: ".*", hooks: [command]}` entry per event unless an entry for
+    /// that event already contains its `marker`. Never removes or reorders anything
     /// (Codex records approval per entry position), never touches other keys, and writes
     /// nothing if the file can't be read or isn't the expected shape.
-    private static func mergeHooks(into url: URL, events: [(String, AgentStatus)]) {
+    static func mergeHooks(into url: URL, entries additions: [(event: String, command: String, marker: String)]) {
         var root: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url),
@@ -158,7 +190,7 @@ nonisolated enum StatusHooks {
             return
         }
         var changed = false
-        for (event, status) in events {
+        for (event, command, marker) in additions {
             guard var entries = (hooks[event] ?? [Any]()) as? [Any] else {
                 appLog("status hooks: \(url.path) has an unexpected \(event) value; not changed")
                 return
@@ -168,7 +200,7 @@ nonisolated enum StatusHooks {
                 return String(decoding: data, as: UTF8.self).contains(marker)
             }
             if present { continue }
-            entries.append(["matcher": ".*", "hooks": [["type": "command", "command": command(status)]]])
+            entries.append(["matcher": ".*", "hooks": [["type": "command", "command": command]]])
             hooks[event] = entries
             changed = true
         }
@@ -194,7 +226,7 @@ nonisolated enum StatusHooks {
 
     // MARK: - opencode: a Poppy-owned plugin file
 
-    private static let opencodePlugin = """
+    static let opencodePlugin = """
     // Managed by Poppy (DESIGN §9.6). Reports status to Poppy when running inside it;
     // a no-op for any other opencode session. Subagent (child) sessions are ignored, so a
     // finishing subagent doesn't report "done" mid-turn.
@@ -214,6 +246,7 @@ nonisolated enum StatusHooks {
             if (info.parentID) return;
             root = info.id;
             report("idle");
+            try { fs.writeFileSync(file + ".conversation", info.id); } catch {}
           }
           if (event.type === "session.idle") {
             if (root && props.sessionID && props.sessionID !== root) return;

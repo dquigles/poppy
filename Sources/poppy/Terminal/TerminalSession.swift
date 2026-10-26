@@ -49,6 +49,11 @@ final class TerminalSession {
     private(set) var agentModel: String?
     var onModelChange: ((String?) -> Void)?
     private var lastModelDate: Date?
+    /// The agent's conversation, as its hooks report it through `statusFile` + ".conversation";
+    /// saved in the layout so the next launch resumes it (DESIGN §9.16).
+    private(set) var conversationID: String?
+    var onConversationChange: (() -> Void)?
+    private var lastConversationDate: Date?
     static let statusPollInterval: TimeInterval = 0.25
     static let statusDirectory = ConfigPaths.directory.appendingPathComponent("run")
 
@@ -65,11 +70,17 @@ final class TerminalSession {
     }
 
     /// `startCommand` runs the first time only (an Act on Selection session's first message);
-    /// a restart, and the saved layout, use `config.command`.
-    init(config: Config, startCommand: String? = nil) {
+    /// a restart, and the saved layout, use `config.command`. A saved `conversationID` is
+    /// resumed by the first start only (DESIGN §9.16).
+    init(config: Config, startCommand: String? = nil, conversationID: String? = nil) {
         self.config = config
         var first = config
-        if let startCommand { first.command = startCommand }
+        if let startCommand {
+            first.command = startCommand
+        } else if let conversationID, let resuming = StatusHooks.resuming(config.command, conversation: conversationID) {
+            first.command = resuming
+            self.conversationID = conversationID
+        }
         spec = Self.launchSpec(for: first)
         logSpec()
         Self.removeStaleStatusFiles()
@@ -150,8 +161,13 @@ final class TerminalSession {
         currentView?.removeFromSuperview()
     }
 
+    /// A restart starts a new conversation (DESIGN §9.16).
     func restart() {
         appLog("restarting agent")
+        if conversationID != nil {
+            conversationID = nil
+            onConversationChange?()
+        }
         Attachments.removeOldFiles()
         spec = Self.launchSpec(for: config)  // re-readies the hooks (e.g. a deleted Claude hooks file)
         logSpec()
@@ -240,6 +256,7 @@ extension TerminalSession {
         statusFile = url
         lastStatusDate = nil
         lastModelDate = nil
+        lastConversationDate = nil
         if agentModel != nil {
             agentModel = nil
             onModelChange?(nil)
@@ -258,6 +275,7 @@ extension TerminalSession {
         if let statusFile {
             try? FileManager.default.removeItem(at: statusFile)
             try? FileManager.default.removeItem(at: Self.modelFile(for: statusFile))
+            try? FileManager.default.removeItem(at: Self.conversationFile(for: statusFile))
         }
         statusFile = nil
     }
@@ -267,6 +285,7 @@ extension TerminalSession {
     /// never truncated here, so no report can be lost between reading and clearing.
     private func pollStatus() {
         pollModel()
+        pollConversation()
         guard let statusFile,
               let date = (try? FileManager.default.attributesOfItem(atPath: statusFile.path))?[.modificationDate] as? Date,
               date != lastStatusDate,
@@ -279,6 +298,26 @@ extension TerminalSession {
 
     static func modelFile(for statusFile: URL) -> URL {
         statusFile.deletingLastPathComponent().appendingPathComponent(statusFile.lastPathComponent + ".model")
+    }
+
+    static func conversationFile(for statusFile: URL) -> URL {
+        statusFile.deletingLastPathComponent().appendingPathComponent(statusFile.lastPathComponent + ".conversation")
+    }
+
+    /// Like `pollModel`; a new id is saved in the layout (DESIGN §9.16).
+    private func pollConversation() {
+        guard let statusFile else { return }
+        let url = Self.conversationFile(for: statusFile)
+        guard let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+              date != lastConversationDate,
+              let data = try? Data(contentsOf: url) else { return }
+        let id = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        lastConversationDate = date
+        guard id != conversationID else { return }
+        conversationID = id
+        appLog("status: conversation \(id)")
+        onConversationChange?()
     }
 
     /// Independent of the status file: a model can change while the status stays "working".

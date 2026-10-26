@@ -20,6 +20,7 @@ struct SettingsModel {
     var autoOpenOnInput: Bool
     var autoOpenOnDone: Bool
     var autoOpenFocus: Bool
+    var foldOnPrompt: Bool
     /// The hotkey's display string; nil when none is registered.
     var hotkey: String?
     var canRecordHotkey: Bool
@@ -96,6 +97,7 @@ final class SettingsView: NSView {
     private let onInputSwitch = FirstMouseSwitch()
     private let onDoneSwitch = FirstMouseSwitch()
     private let focusSwitch = FirstMouseSwitch()
+    private let foldOnPromptSwitch = FirstMouseSwitch()
     private let autoOpenNote = SettingsLabel.description("")
     private let editConfigButton = FirstMouseButton(title: "Edit config.json…", target: nil, action: nil)
     // Panel
@@ -130,6 +132,7 @@ final class SettingsView: NSView {
     private var onInputTitle: NSTextField!
     private var onDoneTitle: NSTextField!
     private var focusTitle: NSTextField!
+    private var foldOnPromptTitle: NSTextField!
     private var directories: [String] = []
 
     override init(frame: NSRect) {
@@ -146,7 +149,8 @@ final class SettingsView: NSView {
         for (control, selector) in [(usageSwitch, #selector(usageChanged)), (hooksSwitch, #selector(hooksChanged)),
                                     (onInputSwitch, #selector(autoOpenChanged(_:))),
                                     (onDoneSwitch, #selector(autoOpenChanged(_:))),
-                                    (focusSwitch, #selector(autoOpenChanged(_:)))] {
+                                    (focusSwitch, #selector(autoOpenChanged(_:))),
+                                    (foldOnPromptSwitch, #selector(autoOpenChanged(_:)))] {
             control.controlSize = .small
             control.target = self
             control.action = selector
@@ -219,10 +223,13 @@ final class SettingsView: NSView {
         let onDone = Self.row("When the agent is done", nil as String?, onDoneSwitch)
         let focus = Self.row("Take keyboard focus", "With this off, the panel shows without taking your typing.",
                              focusSwitch)
+        let foldOnPrompt = Self.row("Fold when you send a prompt", "Back to the pill while the agent works.",
+                                    foldOnPromptSwitch)
         onInputTitle = onInput.title
         onDoneTitle = onDone.title
         focusTitle = focus.title
-        let autoOpen = Self.group([onInput.view, onDone.view, focus.view])
+        foldOnPromptTitle = foldOnPrompt.title
+        let autoOpen = Self.group([onInput.view, onDone.view, focus.view, foldOnPrompt.view])
         let fadeOpacity = Self.row("Faded opacity", nil as String?, fadeSlider)
         fadeSliderTitle = fadeOpacity.title
         let panelGroup = Self.group([
@@ -335,6 +342,7 @@ final class SettingsView: NSView {
         onInputSwitch.setAccessibilityLabel("Auto-Open when the agent needs input")
         onDoneSwitch.setAccessibilityLabel("Auto-Open when the agent is done")
         focusSwitch.setAccessibilityLabel("Auto-Open takes keyboard focus")
+        foldOnPromptSwitch.setAccessibilityLabel("Fold when you send a prompt")
         hotkeyField.setAccessibilityLabel("Hotkey")
         actHotkeyField.setAccessibilityLabel("Act on Selection hotkey")
         actSwitch.setAccessibilityLabel("Act on Selection")
@@ -377,7 +385,7 @@ final class SettingsView: NSView {
     /// Tab order with Full Keyboard Access on (rebuilt when the pill size radios change).
     private func linkKeyLoop() {
         let loop: [NSView] = [agentPopUp, directoryPopUp, hotkeyField, hotkeyTargetPopUp] + pillRadios
-            + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch,
+            + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch, foldOnPromptSwitch,
                foldSwitch, fadeSwitch, fadeSlider.slider, hidePillSwitch,
                fontPopUp, sizeStepper, themePopUp, opacitySlider.slider, cursorPopUp, blinkCheckbox, copySwitch,
                actSwitch, actHotkeyField, actCleanupPopUp, permissionsButton,
@@ -538,10 +546,12 @@ final class SettingsView: NSView {
         onInputSwitch.state = model.autoOpenOnInput ? .on : .off
         onDoneSwitch.state = model.autoOpenOnDone ? .on : .off
         focusSwitch.state = model.autoOpenFocus ? .on : .off
+        foldOnPromptSwitch.state = model.foldOnPrompt ? .on : .off
         let focusEnabled = model.statusHooks && (model.autoOpenOnInput || model.autoOpenOnDone)
         for (control, title, enabled) in [(onInputSwitch, onInputTitle, model.statusHooks),
                                           (onDoneSwitch, onDoneTitle, model.statusHooks),
-                                          (focusSwitch, focusTitle, focusEnabled)] {
+                                          (focusSwitch, focusTitle, focusEnabled),
+                                          (foldOnPromptSwitch, foldOnPromptTitle, model.statusHooks)] {
             control.isEnabled = enabled
             title?.textColor = enabled ? .labelColor : .tertiaryLabelColor
         }
@@ -739,6 +749,7 @@ final class SettingsView: NSView {
         let key = switch sender {
         case onInputSwitch: "autoOpenOnInput"
         case onDoneSwitch: "autoOpenOnDone"
+        case foldOnPromptSwitch: "foldOnPrompt"
         default: "autoOpenFocus"
         }
         onAutoOpen?(key, sender.state == .on)

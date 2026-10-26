@@ -32,6 +32,8 @@ nonisolated struct Config: Codable, Sendable {
     var autoOpenOnDone = false
     /// Auto-open takes the keyboard (true) or only shows the panel (DESIGN §7.15). Default true.
     var autoOpenFocus = true
+    /// Fold to the pill when a prompt sets the agent working (DESIGN §7.15). Default false.
+    var foldOnPrompt = false
     /// Usage footer and pill ring (DESIGN §9.7). Default true.
     var showUsage = true
     /// Which pill the hotkey opens when there are several (DESIGN §11). Default recent.
@@ -85,6 +87,7 @@ nonisolated struct Config: Codable, Sendable {
         autoOpenOnInput = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnInput)) ?? false
         autoOpenOnDone = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenOnDone)) ?? false
         autoOpenFocus = (try? c.decodeIfPresent(Bool.self, forKey: .autoOpenFocus)) ?? true
+        foldOnPrompt = (try? c.decodeIfPresent(Bool.self, forKey: .foldOnPrompt)) ?? false
         showUsage = (try? c.decodeIfPresent(Bool.self, forKey: .showUsage)) ?? true
         hotkeyTarget = (try? c.decodeIfPresent(HotkeyTarget.self, forKey: .hotkeyTarget)) ?? .recent
         foldOnClickOutside = (try? c.decodeIfPresent(Bool.self, forKey: .foldOnClickOutside)) ?? true
@@ -194,9 +197,11 @@ nonisolated struct Config: Codable, Sendable {
         }
     }
 
-    /// lastPathComponent of the command's first word, e.g. "/usr/local/bin/claude --x" -> "claude".
+    /// lastPathComponent of the command's first word after any `NAME=value` words, e.g.
+    /// "/usr/local/bin/claude --x" -> "claude", "FOO=1 codex" -> "codex".
     var pillTitle: String {
-        let first = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? command
+        let words = command.split(whereSeparator: \.isWhitespace).map(String.init)
+        let first = words.first(where: { !AgentProfile.isAssignment($0) }) ?? command
         return (first as NSString).lastPathComponent
     }
 
@@ -294,13 +299,16 @@ nonisolated struct SavedSize: Codable, Sendable {
     var height: Double
 }
 
-/// One session of a saved pill (DESIGN §8.2): restarted fresh at launch.
+/// One session of a saved pill (DESIGN §8.2): restarted at launch, resuming its
+/// conversation if one was recorded (DESIGN §9.16).
 nonisolated struct SavedSession: Codable, Sendable {
     var command: String
     /// `~`-abbreviated, like config.json's `cwd`.
     var cwd: String
     /// Only a name the user chose; default names are worked out again.
     var name: String?
+    /// The agent's conversation id, as its hooks reported it.
+    var conversation: String?
 }
 
 /// One pill of the saved layout (DESIGN §8.2).

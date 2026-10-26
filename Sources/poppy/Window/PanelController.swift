@@ -171,7 +171,7 @@ final class PanelController: NSObject {
             resolved.cwd = each.cwd
             let name = each.name?.trimmingCharacters(in: .whitespacesAndNewlines)
             sessions.append(makeSession(command: each.command, directory: Config.normalize(resolved.resolvedWorkingDirectory),
-                                        name: name?.isEmpty == false ? name : nil))
+                                        name: name?.isEmpty == false ? name : nil, conversation: each.conversation))
         }
         selectedIndex = min(max(saved.selected ?? 0, 0), sessions.count - 1)
         sessionsChanged()  // the sidebar first, so the agents start at their final width
@@ -444,7 +444,14 @@ final class PanelController: NSObject {
         case .working:
             // Not after a "done" auto-open: the user is typing the next prompt in the panel.
             // Pinned means "leave it open" (DESIGN §7.15).
-            if answered, state == .expanded, !isAnimating, !pinned { collapse() }
+            if answered, state == .expanded, !isAnimating, !pinned {
+                collapse()
+            } else if config.foldOnPrompt, changed === session, state == .expanded, !isAnimating, !pinned,
+                      panel.isKeyWindow, !settingsShown {
+                // The user just sent a prompt (or answered) in the panel (DESIGN §7.15).
+                appLog("auto-open: folding, the agent is working")
+                collapse()
+            }
         case .waiting:
             if config.autoOpenOnInput { autoOpen(changed, for: .waiting) } else { appLog("auto-open: off for input") }
         case .done:
@@ -544,11 +551,11 @@ final class PanelController: NSObject {
 
     /// A session with its default name (or `name`); its agent starts when it's first attached.
     private func makeSession(command: String, directory: String, name: String? = nil,
-                             startCommand: String? = nil) -> TerminalSession {
+                             startCommand: String? = nil, conversation: String? = nil) -> TerminalSession {
         var sessionConfig = config
         sessionConfig.command = command
         sessionConfig.cwd = Config.abbreviate(directory)
-        let new = TerminalSession(config: sessionConfig, startCommand: startCommand)
+        let new = TerminalSession(config: sessionConfig, startCommand: startCommand, conversationID: conversation)
         new.customName = name
         new.defaultName = uniqueName(Self.directoryName(new.workingDirectory), for: new)
         wire(new)
@@ -566,6 +573,7 @@ final class PanelController: NSObject {
         wired.onModelChange = { [weak self, weak wired] model in
             if let self, wired === session { usage.setAgentModel(model) }
         }
+        wired.onConversationChange = { [weak self] in self?.manager.saveLayout() }
     }
 
     /// `base`, or "base 2", "base 3"… (the lowest free number) if another session anywhere
@@ -639,7 +647,8 @@ final class PanelController: NSObject {
                   selected: savedSelection,
                   pinned: pinned ? true : nil,
                   sessions: savedSessions.map {
-                      SavedSession(command: $0.command, cwd: Config.abbreviate($0.workingDirectory), name: $0.customName)
+                      SavedSession(command: $0.command, cwd: Config.abbreviate($0.workingDirectory), name: $0.customName,
+                                   conversation: $0.conversationID)
                   })
     }
 
@@ -684,6 +693,7 @@ final class PanelController: NSObject {
         for each in sessions {
             each.onStatusChange = nil
             each.onModelChange = nil
+            each.onConversationChange = nil
             each.onViewReplaced = nil
             each.terminateChild(reap: true)
             each.detach()
@@ -1002,6 +1012,7 @@ final class PanelController: NSObject {
     private func release(_ leaving: TerminalSession, at index: Int, ending: Bool) {
         leaving.onStatusChange = nil
         leaving.onModelChange = nil
+        leaving.onConversationChange = nil
         leaving.onViewReplaced = nil
         if ending { leaving.terminateChild(reap: true) }
         leaving.detach()
@@ -1181,6 +1192,7 @@ final class PanelController: NSObject {
         for each in leaving {
             each.onStatusChange = nil
             each.onModelChange = nil
+            each.onConversationChange = nil
             each.onViewReplaced = nil
             each.detach()
         }
@@ -1461,6 +1473,7 @@ final class PanelController: NSObject {
                     "statusFile": each.statusFilePath ?? "",
                     "pid": Int(each.agentPid ?? 0),
                     "exited": each.exited,
+                    "conversation": each.conversationID ?? "",
                     "shown": each.isShown,
                     "screen": each.screenText,
                 ]
@@ -2278,7 +2291,7 @@ final class PanelController: NSObject {
             pillPresets: Self.pillPresets.map(\.name), pillPreset: preset,
             showUsage: config.showUsage, statusHooks: config.statusHooks,
             autoOpenOnInput: config.autoOpenOnInput, autoOpenOnDone: config.autoOpenOnDone,
-            autoOpenFocus: config.autoOpenFocus,
+            autoOpenFocus: config.autoOpenFocus, foldOnPrompt: config.foldOnPrompt,
             hotkey: hotKeys?.current?.displayString, canRecordHotkey: hotKeys?.canRecord == true,
             hotkeyTargets: HotkeyTarget.allCases.map(\.title),
             hotkeyTarget: HotkeyTarget.allCases.firstIndex(of: config.hotkeyTarget) ?? 0,
