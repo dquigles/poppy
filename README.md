@@ -1,13 +1,51 @@
+<div align="center">
+
 # Poppy
 
-A floating Liquid Glass terminal for your coding agent on macOS.
+**A floating Liquid Glass terminal for your coding agent on macOS.**
 
-A small glass pill sits in a corner of your screen, on top of everything and on every Space, fullscreen apps included. Click it (or press **⌃⌥Space**) and it opens into a glass panel with a real terminal running your agent: Claude Code by default, or Codex, Antigravity, opencode, or any command you like. Poppy never takes focus away from the app you're in, so a fullscreen app stays fullscreen, and a click outside the panel folds it back into the pill.
+A glass pill sits on top of everything, on every Space and over fullscreen apps.<br>
+Click it and it opens into a real terminal running Claude Code, Codex, Antigravity, opencode, or any command you like.
 
-- **Agent status on the pill:** blue while the agent works, orange when it needs your input, green when it's done. It can also open by itself when the agent needs you.
-- **Usage meters** for Claude, Codex and Antigravity: a ring around the pill (the 5-hour limit, or for Antigravity the weekly limit of the model group in use), and % left with reset times in the panel.
+![macOS 26](https://img.shields.io/badge/macOS-26%20Tahoe-black?logo=apple) ![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white) ![MIT](https://img.shields.io/badge/license-MIT-blue)
+
+<img src="docs/media/poppy.gif" alt="Poppy: the pill opens into Claude Code, folds while the agent works, and opens again with the answer" width="820">
+
+[**▶ Watch the 1-minute demo**](docs/media/poppy-demo.mp4) · [Install](#install) · [Using it](#using-it) · [Configuration](#configuration)
+
+</div>
+
+## Why Poppy
+
+Your agent works best when you can glance at it without switching apps. Poppy keeps it one click (or **⌃⌥Space**) away, and never takes focus from the app you're in: a fullscreen app stays fullscreen, and a click outside folds the panel back into the pill.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/poppy-fullscreen.gif" alt="Poppy over fullscreen VS Code"></td>
+<td width="50%"><img src="docs/media/needs-input.png" alt="Claude asking for permission in Poppy"></td>
+</tr>
+<tr>
+<td><b>Over fullscreen apps.</b> The pill floats over your editor; the panel opens on top, and your code updates underneath as the agent works.</td>
+<td><b>It tells you when it needs you.</b> Blue while working, orange when it needs your input, green when it's done, and it can open by itself.</td>
+</tr>
+<tr>
+<td><img src="docs/media/panel-sidebar.png" alt="Two sessions in Poppy's sidebar"></td>
+<td><img src="docs/media/settings.png" alt="Poppy's settings page"></td>
+</tr>
+<tr>
+<td><b>Several agents at once.</b> Sessions in a sidebar (⌘T), as many pills as you like, and drag sessions between them.</td>
+<td><b>Settings in the panel.</b> Agent, folder, hotkeys, Auto-Open, the terminal's look and more, one ⌘, away.</td>
+</tr>
+</table>
+
+## Features
+
+- **Agent status on the pill:** blue while the agent works, orange when it needs your input, green when it's done. **Auto-Open** can open the panel when the agent needs you or finishes, and **Fold when you send a prompt** puts it away while the agent works.
+- **Conversations come back:** quit Poppy and reopen it, and each session resumes its conversation (Claude Code, Codex and opencode; Antigravity untested).
+- **Usage meters** for Claude, Codex and Antigravity: a ring around the pill, and % left with reset times in the panel.
 - **Images and files:** paste a screenshot with ⌘V, or drag files and images onto the terminal or the pill, and the agent gets their paths.
-- **Several agents at once:** sessions in one pill's sidebar (⌘T), and as many pills as you like.
+- **Several agents at once:** sessions in one pill's sidebar, several pills, and sessions dragged between pills with Liquid Glass effects.
+- **Act on Selection** (optional): select something in any app, press a hotkey, and a Claude Code session works out what it is and answers or acts in that app.
 - **A `poppy` command:** `poppy ~/code/myproject` opens the session in that folder, or starts one there.
 
 ## Requirements
@@ -30,7 +68,7 @@ This builds Poppy and installs:
 - **`Poppy.app`** in `/Applications`, or `~/Applications` if `/Applications` isn't writable.
 - **The `poppy` command** in `~/.local/bin`. If that folder isn't on your `PATH`, the script tells you the line to add to `~/.zshrc`.
 
-It then starts Poppy. To update later, run `git pull` and `./scripts/install.sh` again.
+It then starts Poppy, which walks you through a short setup the first time. To update later, run `git pull` and `./scripts/install.sh` again.
 
 You can put things elsewhere: `APP_DIR=~/Applications BIN_DIR=/usr/local/bin ./scripts/install.sh`.
 
@@ -42,15 +80,13 @@ To start Poppy at login, turn on **Launch at login** in Poppy's Settings (⌘, i
 
 ## Using it
 
-- **Click the pill**, or press **⌃⌥Space**, to open the panel. Click outside it, or press the hotkey again, to fold it back.
-- **Drag the pill** to any corner or edge. The panel opens from the corner it's closest to.
-- **Resize** the open panel by dragging its edges.
-- **Sessions:** ⌘T (or ＋ in the sidebar) starts another agent in the same pill; ⌘1–9 switch, ⌘W closes. With two or more, a sidebar lists them.
-- **Pills:** New Pill in the menu gives you another pill, with its own sessions and place on screen. Only one is open at a time. The settings page's "Hotkey opens" picks which one the hotkey opens: the one you used last, the one that needs you most, or each in turn. Closing a pill's last session removes it. Poppy remembers your pills and sessions and starts them fresh next time.
-- **Right-click the pill** (or use Poppy's menu bar icon) for everything else:
-  - switch agent, change working folder, restart the agent
-  - Auto-Open (open when the agent needs input and/or is done)
-  - pill size, show usage, set the hotkey, quit
+- **Click the pill**, or press **⌃⌥Space**, to open the panel. Click outside it, or press the hotkey again, to fold it back. The pin in the header keeps it open.
+- **Drag the pill** to any corner or edge. The panel opens from the corner it's closest to. **Resize** the open panel by dragging its edges.
+- **Change folder:** click the session's name at the top of the panel for its folder, your recent folders, and Choose Folder…
+- **Sessions:** ⌘T (or ＋ in the header; ⌄ beside it for another agent, a folder or a plain terminal) starts another session in the same pill; ⌘1–9 switch, ⌘W closes. With two or more, a sidebar lists them; drag a row out to give it its own pill, or drop a pill on another to merge them.
+- **Pills:** New Pill in the menu gives you another pill, with its own sessions and place on screen. Only one is open at a time. "Hotkey opens" in Settings picks which one the hotkey opens: the one you used last, the one that needs you most, or each in turn. Closing a pill's last session removes it. Poppy remembers your pills and sessions, and resumes their conversations next time.
+- **Settings** (⌘, in the panel, or Settings… in the menu): agent, working folder, hotkeys, pill size, usage meters, agent status, Auto-Open, keeping the panel open, fading and hiding the pill, the terminal's font, theme and cursor, launch at login.
+- **Right-click the pill** (or use Poppy's menu bar icon) to switch agent or folder, restart the agent, start sessions and pills, open Settings, or quit.
 
 ### The `poppy` command
 
@@ -104,6 +140,7 @@ Poppy reads this file when it starts, so restart Poppy after editing it.
   - Codex: entries appended to `~/.codex/hooks.json`. Codex asks you once to approve them.
   - Antigravity: a plugin, `~/.gemini/config/plugins/poppy-status/`. That folder is shared with the Antigravity desktop app and IDE, where the plugin does nothing. Antigravity has no hook for "waiting for you", so its pill never turns orange: it stays blue while Antigravity asks you to approve a command, and idle while it asks whether to trust a new folder.
   - opencode: a plugin, `~/.config/opencode/plugins/poppy-status.ts`.
+  - The same hooks also tell Poppy each session's conversation id, so it can resume it when you reopen Poppy.
   - It only adds entries; it never removes or changes yours. Turn this off with **Agent status** in Settings (or `"statusHooks": false`).
 - **Usage meters.**
   - For Claude, Poppy runs Claude Code's own `/usage` command (`claude -p /usage`): no model call, not saved as a session, and with your user settings skipped, so hooks in your own Claude Code settings don't fire for it (organization-managed settings still apply). Poppy never reads your Claude login.
@@ -112,7 +149,7 @@ Poppy reads this file when it starts, so restart Poppy after editing it.
   - Turn the meters off with **Show usage meters** in Settings (**Settings…** in the menu, or ⌘, in the panel).
 - **Pasted and dropped images** are saved as PNGs in a private temporary folder and deleted after a week.
 
-Poppy needs no special permissions (no Accessibility, Screen Recording or Input Monitoring).
+Poppy itself needs no special permissions. Only **Act on Selection**, if you turn it on, needs **Accessibility** (to read the selection and act on the app's controls) and, for its screenshot mode, **Screen Recording**; the setup asks for them only then.
 
 ## Uninstall
 
@@ -127,11 +164,10 @@ Then remove Poppy's hook entries from `~/.codex/hooks.json` if you used Codex: e
 
 ```sh
 swift build                   # debug build
-./scripts/dev.sh              # build Poppy Dev and (re)start it; log in build/poppy-dev.log
-./scripts/bundle.sh           # only build "build/Poppy Dev.app"
-"build/Poppy Dev.app/Contents/MacOS/poppy-dev"   # run it, with logs on stderr
-./scripts/test-sessions.py    # scripted tests against Poppy Dev: sessions (M24)
-./scripts/test-pills.py       # and several pills (M25; restarts Poppy Dev)
+swift test                    # unit tests: hooks, resuming, config, usage parsing, hotkeys, the poppy command…
+./scripts/dev.sh              # build Poppy Dev (debug) and (re)start it; log in build/poppy-dev.log
+./scripts/dev.sh --stop       # stop it
+./scripts/test-features.py    # scripted tests against Poppy Dev (also test-sessions.py, test-pills.py, test-drag.py)
 ./scripts/bundle.sh --release # build build/Poppy.app (what install.sh installs)
 ```
 
