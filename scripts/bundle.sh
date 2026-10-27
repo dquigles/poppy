@@ -13,21 +13,26 @@ case "${1:-}" in
 esac
 
 if (( DEV )); then
-    # Its own name, bundle ID, executable (so `pkill -x poppy` in install.sh spares it) and,
+    # A debug build in .build, like `swift build` and `swift test`: only changed files are
+    # recompiled, so rebuilding Poppy Dev takes seconds. Its own name, bundle ID, executable (so `pkill -x poppy` in install.sh spares it) and,
     # through the PoppyDev key, its own settings folder, no default hotkey and a DEV tag.
     APP="build/Poppy Dev.app"
     EXECUTABLE="poppy-dev"
+    BUILD=(swift build)
 else
+    # Release in its own folder, so Poppy Dev's builds (often from another terminal, whose
+    # environment differs and makes SwiftPM start over) never throw its cache away.
     APP="build/Poppy.app"
     EXECUTABLE="poppy"
+    BUILD=(swift build -c release --scratch-path .build-release)
 fi
 
-swift build -c release
+"${BUILD[@]}"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp "$(swift build -c release --show-bin-path)/poppy" "$APP/Contents/MacOS/$EXECUTABLE"
+cp "$("${BUILD[@]}" --show-bin-path)/poppy" "$APP/Contents/MacOS/$EXECUTABLE"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 if (( DEV )); then
     plist="$APP/Contents/Info.plist"
