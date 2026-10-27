@@ -1287,6 +1287,18 @@ final class PanelController: NSObject {
             renamingSession = sessions[index].id
             renameEnded(command.name)
         case "restart": guard valid else { return "no session \(index)" }; sessions[index].restart()
+        case "type":
+            // `name` pasted into session `index`'s terminal (if any), then Return unless value is
+            // false; or `key` (up, down, left, right, escape) pressed instead.
+            guard valid else { return "no session \(index)" }
+            if let key = command.key {
+                return sessions[index].pressKey(key) ? nil : "unknown key \(key)"
+            }
+            if let text = command.name, !text.isEmpty { sessions[index].paste(text) }
+            if command.value ?? true {
+                let typed = sessions[index]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { typed.pressReturn() }  // after the paste lands
+            }
         case "rail": toggleSidebarRail()
         case "drag":
             // A scripted mouse drag, step by step (key: rowBegin, rowMove, rowEnd, pillMove,

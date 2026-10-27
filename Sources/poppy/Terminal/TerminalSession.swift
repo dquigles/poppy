@@ -92,6 +92,19 @@ final class TerminalSession {
         currentView?.pasteText(text)
     }
 
+    /// Return, as if pressed (Poppy Dev's `type` op, DESIGN §12.2).
+    func pressReturn() {
+        currentView?.send(txt: "\r")
+    }
+
+    /// An arrow key or Esc, as if pressed (Poppy Dev's `type` op).
+    func pressKey(_ name: String) -> Bool {
+        let sequences = ["up": "\u{1B}[A", "down": "\u{1B}[B", "right": "\u{1B}[C", "left": "\u{1B}[D", "escape": "\u{1B}"]
+        guard let sequence = sequences[name], let currentView else { return false }
+        currentView.send(txt: sequence)
+        return true
+    }
+
     /// The launch spec, with the command readied for status hooks (DESIGN §9.6).
     private static func launchSpec(for config: Config) -> LaunchSpec {
         var hooked = config

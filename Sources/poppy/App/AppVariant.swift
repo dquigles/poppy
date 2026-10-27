@@ -10,6 +10,9 @@ nonisolated enum AppVariant {
         return ProcessInfo.processInfo.environment["POPPY_DEV"] == "1"
     }()
 
+    /// Poppy Dev's DEV tag on the pill; `POPPY_HIDE_DEV_TAG=1` hides it, to record demos.
+    static var showsDevTag: Bool { isDev && ProcessInfo.processInfo.environment["POPPY_HIDE_DEV_TAG"] != "1" }
+
     /// "Poppy" or "Poppy Dev", in the menu, the menu bar tooltip and the log.
     static var name: String { isDev ? "Poppy Dev" : "Poppy" }
 }

@@ -65,7 +65,7 @@ final class PillView: NSView {
         dropRing.isHidden = true
         layer?.addSublayer(dropRing)
         registerForDraggedTypes(Attachments.dropTypes)  // drop onto the pill (DESIGN §9.10)
-        if AppVariant.isDev { addDevTag() }
+        if AppVariant.showsDevTag { addDevTag() }
         diameter = frame.width
         addBadge(diameter: frame.width)
         setAccessibilityElement(true)

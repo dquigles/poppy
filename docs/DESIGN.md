@@ -1197,6 +1197,8 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 - No `poppy` command is installed for it; `"build/Poppy Dev.app/Contents/MacOS/poppy-dev" --cli <args>` works the same way (§9.9).
 
 ### 12.2 Debug hook and scripted tests (M24)
+**Demo recordings:** started with `POPPY_HIDE_DEV_TAG=1` in its environment, Poppy Dev shows no DEV tag on its pills (`AppVariant.showsDevTag`), so a scripted demo looks like Poppy. Used with Cap's CLI to record the README GIF and demo video (2026-10-27).
+
 **`DebugHook`** (`App/DebugHook.swift`) lets scripts drive Poppy Dev without the mouse. `AppDelegate` creates it only when `AppVariant.isDev`, so the installed Poppy never has it.
 - **Reading commands:** every 0.1 s it reads `debug-cmd-<id>.json` from Poppy Dev's own `run/` folder (the same folder, and the same trust, as the `poppy` command's request files, §9.9). Each command is `{id, op, index?, command?, directory?, name?, key?, value?, width?, pill?, new?, newPill?, target?, x?, y?}` (`target`, `x`, `y` since M26), deleted after it's read.
 - **Pill ops** (M25, `PillManager.debugRun`): `newPill` (command, directory, value: show), `hotkey` (the hotkey's handler), `hotkeyTarget` (key), `apply` (a `LaunchRequest`: directory, command, new, newPill, value: show), `openPill` (pill), `statusMenu` (builds the menu bar menu), `reloadLayout` (reads back the saved pills), and since M26 `dropRow` (row `index` of `pill` onto pill `target`, or with no target out to a new pill at `x`, `y`), `dropPill` (`pill` merged into `target`) and `liquidHold` (`value`: hold `pill`'s glass in the liquid overlay at rest, to compare its look).
@@ -1204,6 +1206,7 @@ A second copy for working on Poppy from inside Poppy: the agent runs in the inst
 - **Running them:** every other op goes to pill `pill` (default the most recent), whose `PanelController.debugRun` runs it through the same code as the UI. The ops are:
   - `state`;
   - `new`, `click`, `close`, `confirm` (value: close or cancel), `rename` (name, or null to cancel), `restart`;
+  - `type` (2026-10-27, for scripted demos with a real agent): pastes `name` into session `index`'s terminal (sanitized like any paste, §9.10), then Return 0.3 s later unless `value` is false; or, with `key` (`up`, `down`, `left`, `right`, `escape`), presses that key instead (e.g. answering Claude Code's folder-trust question);
   - `cmdT`, `cmdW`, `cmdN` (through GlassPanel's callbacks, as the keys);
   - `rail`, `dragSidebar` (width), `moveRow` (index to `target`, M26);
   - `drag` (M26): one step of a scripted mouse drag at `x`, `y`, `key` one of `rowBegin` (index), `rowMove`, `rowEnd`, `pillMove`, `pillEnd`; it runs the same code as the mouse, with `DragPointer.scripted` standing in for the mouse position;

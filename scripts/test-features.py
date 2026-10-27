@@ -246,6 +246,8 @@ def launch(isolated=True):
 
 if not os.path.exists(APP):
     sys.exit("build Poppy Dev first: ./scripts/dev.sh")
+# Started again at the end only if it was running now (it isn't left running otherwise).
+was_running = subprocess.run(["pgrep", "-xq", "poppy-dev"]).returncode == 0
 original_config = open(CONFIG).read() if os.path.exists(CONFIG) else None
 original_state = open(STATE).read() if os.path.exists(STATE) else None
 stop()
@@ -619,7 +621,8 @@ for path, text in ((CONFIG, original_config), (STATE, original_state)):
     else:
         with open(path, "w") as f:
             f.write(text)
-launch(isolated=False)
+if was_running:
+    launch(isolated=False)
 print(f"\n{len(passed)} passed, {len(failed)} failed")
 for name, error in failed:
     print(f"  FAIL  {name}: {error}")
