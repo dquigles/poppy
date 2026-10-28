@@ -13,7 +13,7 @@ opencode hooks it installs never touch your real ~/.codex or ~/.config/opencode.
 
 Usage: ./scripts/dev.sh && ./scripts/test-features.py
 Poppy Dev briefly takes the keyboard while a test needs a panel focused. The fade test
-assumes the mouse isn't over the panel (hovering keeps it at full opacity).
+moves the pill so its open panel isn't under the mouse (hovering keeps it at full opacity).
 """
 import json, os, subprocess, sys, tempfile, time, uuid
 
@@ -109,7 +109,7 @@ def test(fn):
         fn()
         passed.append(name)
         print(f"  ok    {name}")
-    except AssertionError as e:
+    except Exception as e:  # a script error fails the test; the teardown still runs
         failed.append((name, str(e)))
         print(f"  FAIL  {name}\n        {e}")
     finally:
@@ -546,16 +546,50 @@ def hide_the_pill():
     check("saved", saved_config().get("hidePill") is False)
 
 
+def under_mouse(s):
+    x, y, w, h = s["frame"]
+    mx, my = s["mouse"]
+    return x <= mx <= x + w and y <= my <= y + h
+
+
+def move_pill(x, y):
+    """Drags the collapsed pill's center to (x, y), as the mouse would."""
+    cmd("drag", key="pillMove", x=x, y=y)
+    cmd("drag", key="pillEnd", x=x, y=y)
+    settle()
+
+
+def open_away_from_mouse():
+    """Opens the panel focused where it isn't under the mouse (trying each screen corner);
+    returns the pill's first center, to move it back."""
+    s = state()
+    x, y, w, h = s["frame"]
+    home = (x + w / 2, y + h / 2)
+    sx, sy, sw, sh = s["screen"]
+    for cx, cy in [(None, None), (sx + 60, sy + 60), (sx + sw - 60, sy + 60), (sx + 60, sy + sh - 60),
+                   (sx + sw - 60, sy + sh - 60)]:
+        if cx is not None:
+            move_pill(cx, cy)
+        s = focus_expanded()
+        if not under_mouse(s):
+            return home
+        cmd("collapse")
+        settle()
+    raise AssertionError(f"every place the panel opens is under the mouse; {summary(s)}")
+
+
 @test
 def fade_when_not_focused():
     """Fade when not focused: the open panel fades to the set opacity when it loses the keyboard"""
     cmd("setting", key="inactiveOpacity", width=0.4)
     cmd("setting", key="fadeWhenInactive", value=True)
+    home = None
     try:
-        s = focus_expanded()
+        home = open_away_from_mouse()
+        s = state()
         check("full while focused", s["fade"] == 1, summary(s))
         cmd("blur")
-        s = wait_for(lambda s: abs(s["fade"] - 0.4) < 0.01, "the fade (is the mouse over the panel?)")
+        s = wait_for(lambda s: abs(s["fade"] - 0.4) < 0.01, "the fade")
         cmd("focus")
         wait_for(lambda s: s["fade"] == 1, "full opacity again")
         cmd("blur")
@@ -565,7 +599,13 @@ def fade_when_not_focused():
         check("the pill never fades", s["fade"] == 1, summary(s))
     finally:
         cmd("setting", key="fadeWhenInactive", value=False)
-        cmd("focus") if state()["state"] == "expanded" else None
+        if home:
+            if state()["state"] == "expanded":
+                cmd("collapse")
+                settle()
+            move_pill(*home)
+        elif state()["state"] == "expanded":
+            cmd("focus")
 
 
 @test

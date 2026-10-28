@@ -1345,10 +1345,15 @@ final class PanelController: NSObject {
         case "expand": expand(focus: command.value ?? true)
         case "collapse": collapse()
         case "focus":
-            debugBlurPanel?.orderOut(nil)
-            guard state == .expanded else { return "not expanded" }
+            guard state == .expanded else {
+                debugBlurPanel?.orderOut(nil)
+                return "not expanded"
+            }
+            // The key goes straight from the blur panel to this one: ordering the blur panel
+            // out first can leave the app without a key window, and inactive.
             panel.makeKeyAndOrderFront(nil)
             if let focusTarget { panel.makeFirstResponder(focusTarget) }
+            debugBlurPanel?.orderOut(nil)
         case "blur":
             let blur = debugBlurPanel ?? GlassPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1))
             blur.allowsKey = true
@@ -1460,6 +1465,9 @@ final class PanelController: NSObject {
         [
             "state": state == .expanded ? "expanded" : "collapsed",
             "frame": [Double(panel.frame.minX), Double(panel.frame.minY), Double(panel.frame.width), Double(panel.frame.height)],
+            "screen": { let r = Self.screen(for: panel.frame).visibleFrame
+                        return [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)] }(),
+            "mouse": [Double(NSEvent.mouseLocation.x), Double(NSEvent.mouseLocation.y)],
             "animating": isAnimating,
             "key": panel.isKeyWindow,
             "settings": settingsShown,
