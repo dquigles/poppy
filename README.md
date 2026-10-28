@@ -38,6 +38,12 @@ Your agent works best when you can glance at it without switching apps. Poppy ke
 </tr>
 </table>
 
+<div align="center">
+<img src="docs/media/poppy-maps.gif" alt="Poppy over full-screen Apple Maps: Claude plans a day's walk in Paris and saves it as a note" width="820">
+<br>
+<b>Not just for code.</b> Over full-screen Maps, Claude plans a day's walk in Paris and saves it as a note.
+</div>
+
 ## Features
 
 - **Agent status on the pill:** blue while the agent works, orange when it needs your input, green when it's done. **Auto-Open** can open the panel when the agent needs you or finishes, and **Fold when you send a prompt** puts it away while the agent works.
