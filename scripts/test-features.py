@@ -596,6 +596,26 @@ def switches_are_saved():
         cmd("setting", key=key, value=before if before is not None else key == "confirmQuit")
 
 
+# --- Send Selection (DESIGN §9.17) -----------------------------------------------------
+
+@test
+def send_selection_pastes_into_the_recent_session():
+    """Send Selection pastes into the recent pill's session and opens it, not into a waiting agent"""
+    settle()
+    cmd("actSend", command="sent from another app")
+    s = wait_for(lambda s: s["state"] == "expanded" and s["key"], "the panel to open")
+    wait_for(lambda s: "sent from another app" in s["sessions"][0]["screen"], "the pasted text")
+    cmd("type", index=0)  # Return: cat echoes it, the line is done
+    cmd("collapse")
+    settle()
+    report(0, "waiting")
+    wait_for(lambda s: s["sessions"][0]["status"] == "waiting", "waiting")
+    cmd("actSend", command="not for a question")
+    s = wait_for(lambda s: s["state"] == "expanded", "the panel to open")
+    time.sleep(0.3)
+    check("not pasted", "not for a question" not in state()["sessions"][0]["screen"], summary(s))
+
+
 # --- intro (DESIGN §9.15) ---------------------------------------------------------------
 
 @test

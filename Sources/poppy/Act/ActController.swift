@@ -62,6 +62,39 @@ final class ActController {
         }
     }
 
+    /// Send Selection (DESIGN §9.17): the front app's selection, or with nothing selected a
+    /// region screenshot's path, pasted into the most recent pill's session, which opens on
+    /// it. No controls, no prompt: the user writes the rest.
+    func sendHotkeyPressed() {
+        guard !isCapturing else { return }
+        guard SelectionCapture.isTrusted(prompt: true) else {
+            appLog("send: no Accessibility permission")  // macOS shows its own prompt the first time
+            return
+        }
+        guard let front = NSWorkspace.shared.frontmostApplication, front != NSRunningApplication.current else {
+            appLog("send: \(AppVariant.name) is in front, nothing to send")
+            return
+        }
+        isCapturing = true
+        let pid = front.processIdentifier
+        appLog("send: started in \(front.localizedName ?? "the app")")
+        Task {
+            var text = await Task.detached { SelectionCapture.selection(pid: pid) }.value
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                guard let image = await screenshot() else {
+                    isCapturing = false
+                    return
+                }
+                text = Attachments.pasteText(for: [URL(fileURLWithPath: image)])
+                appLog("send: screenshot")
+            } else {
+                appLog("send: selection, \(text.count) characters")
+            }
+            isCapturing = false
+            manager?.sendToRecentSession(text)
+        }
+    }
+
     /// Nothing selected: a region screenshot instead (`screencapture -i`, the ⌘⇧4 crosshair).
     private func screenshot() async -> String? {
         guard CGPreflightScreenCaptureAccess() else {
@@ -211,6 +244,7 @@ final class ActController {
     /// `actCapture`: reads the front app now (selection and controls, no screenshot).
     /// `actStart`: starts a session on the last capture, with `command` as the selection.
     /// `actRun`: runs `command` (an ActPlan's JSON) on the last capture.
+    /// `actSend`: Send Selection's paste of `command`, as if it was selected (DESIGN §9.17).
     func debugRun(_ command: DebugHook.Command) -> String? {
         switch command.op {
         case "actCapture":
@@ -232,6 +266,10 @@ final class ActController {
                   let plan = try? JSONDecoder().decode(ActPlan.self, from: data) else { return "invalid plan" }
             let failures = ActionRunner.run(plan, in: capture)
             return failures.isEmpty ? nil : failures.joined(separator: "; ")
+        case "actSend":
+            guard let text = command.command, let manager else { return "no text" }
+            manager.sendToRecentSession(text)
+            return nil
         default:
             return "unknown op \(command.op)"
         }

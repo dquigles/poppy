@@ -220,6 +220,11 @@ final class PanelController: NSObject {
             self?.manager.actHotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
         }
         settings.actHotkeyField.onEnd = { [weak self] in self?.manager.actHotKeys?.endRecording() }
+        settings.sendHotkeyField.onBegin = { [weak self] in self?.manager.sendHotKeys?.beginRecording() ?? false }
+        settings.sendHotkeyField.onRecord = { [weak self] combo in
+            self?.manager.sendHotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
+        }
+        settings.sendHotkeyField.onEnd = { [weak self] in self?.manager.sendHotKeys?.endRecording() }
         expandedView.header.onDone = { [weak self] in self?.settingsDone() }
         expandedView.header.onNew = { [weak self] in self?.newSession() }
         expandedView.header.onNewMenu = { [weak self] view in self?.showNewSessionMenu(from: view) }
@@ -243,6 +248,7 @@ final class PanelController: NSObject {
             refreshSettings()
         }
         settings.onActEnabled = { [weak self] on in self?.manager.setActEnabled(on) }
+        settings.onSendEnabled = { [weak self] on in self?.manager.setSendEnabled(on) }
         settings.onShowIntro = { [weak self] in self?.openIntro() }
         settings.onCheckPermissions = { [weak self] in self?.openIntro(at: .permissions, single: true) }
         wireIntro()
@@ -512,7 +518,8 @@ final class PanelController: NSObject {
             }
             return
         }
-        if hotKeys?.isRecording == true || manager.actHotKeys?.isRecording == true {
+        if hotKeys?.isRecording == true || manager.actHotKeys?.isRecording == true
+            || manager.sendHotKeys?.isRecording == true {
             appLog("auto-open: skipped (recording a hotkey)")
             return
         }
@@ -691,6 +698,7 @@ final class PanelController: NSObject {
         expandedView.settingsView.intro.cancelRecording()
         expandedView.settingsView.hotkeyField.cancel()
         expandedView.settingsView.actHotkeyField.cancel()
+        expandedView.settingsView.sendHotkeyField.cancel()
         for each in sessions {
             each.onStatusChange = nil
             each.onModelChange = nil
@@ -2258,6 +2266,7 @@ final class PanelController: NSObject {
         finishIntro()
         expandedView.settingsView.hotkeyField.cancel()
         expandedView.settingsView.actHotkeyField.cancel()
+        expandedView.settingsView.sendHotkeyField.cancel()
         settingsShown = false
         expandedView.setSettingsVisible(false, animated: animated && state == .expanded)
         appLog("settings: closed")
@@ -2319,6 +2328,8 @@ final class PanelController: NSObject {
             hotkeyTarget: HotkeyTarget.allCases.firstIndex(of: config.hotkeyTarget) ?? 0,
             actHotkey: manager.actHotKeys?.current?.displayString,
             canRecordActHotkey: manager.actHotKeys?.canRecord == true, actEnabled: config.actEnabled,
+            sendHotkey: manager.sendHotKeys?.current?.displayString,
+            canRecordSendHotkey: manager.sendHotKeys?.canRecord == true, sendEnabled: config.sendEnabled,
             settings: config, launchAtLogin: LaunchAtLogin.state)
     }
 
@@ -2499,7 +2510,8 @@ final class PanelController: NSObject {
 
     /// Pastes `text` into the agent and shows it, focused. Not while the agent is asking
     /// for input: the characters could answer its prompt, so it's only shown (DESIGN §9.10).
-    private func sendToAgent(_ text: String) {
+    /// Also Send Selection's paste (§9.17).
+    func sendToAgent(_ text: String) {
         if session.status == .waiting {
             appLog("attachments: not pasted, the agent is waiting for an answer")
         } else {

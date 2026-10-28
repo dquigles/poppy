@@ -3,7 +3,8 @@ import Carbon
 
 /// Owns a global hotkey and its current combo; the settings page's shortcut field
 /// records a new one through it (DESIGN §11, §11.2). Owned by AppDelegate: one for the
-/// panel hotkey, one for Act on Selection (§9.14), each saved under its own config key.
+/// panel hotkey, one for Act on Selection (§9.14), one for Send Selection (§9.17), each saved
+/// under its own config key.
 final class HotKeyManager {
     enum RecordResult {
         case saved
@@ -13,7 +14,7 @@ final class HotKeyManager {
     }
 
     private let hotKey: GlobalHotKey?
-    /// config.json's key for the combo ("hotkey" or "actHotkey").
+    /// config.json's key for the combo ("hotkey", "actHotkey" or "sendHotkey").
     private let configKey: String
     /// The combo the user chose. Registered whenever no recording is in progress
     /// (unless registration failed at launch).

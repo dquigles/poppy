@@ -23,6 +23,7 @@ struct ConfigTests {
         #expect(config.terminalTheme == .dark && config.cursorStyle == .block && config.cursorBlink)
         #expect(!config.copyOnSelect && config.confirmQuit)
         #expect(config.actHotkey == "" && !config.actEnabled && config.actCleanup == .next)
+        #expect(config.sendHotkey == "" && !config.sendEnabled)
         #expect(!config.introShown)
         #expect(config.agents == nil)
     }
@@ -65,6 +66,13 @@ struct ConfigTests {
         #expect(try decode(#"{"actHotkey": "ctrl+opt+a"}"#).actEnabled)
         #expect(try !decode(#"{"actHotkey": "ctrl+opt+a", "actEnabled": false}"#).actEnabled)
         #expect(try decode(#"{"actEnabled": true}"#).actEnabled)
+    }
+
+    /// Send Selection is on when its hotkey is set by hand, unless turned off.
+    @Test func sendEnabledDefaultsToWhetherAHotkeyIsSet() throws {
+        #expect(try decode(#"{"sendHotkey": "ctrl+opt+s"}"#).sendEnabled)
+        #expect(try !decode(#"{"sendHotkey": "ctrl+opt+s", "sendEnabled": false}"#).sendEnabled)
+        #expect(try !decode(#"{"sendHotkey": 3}"#).sendEnabled)
     }
 
     @Test func badAgentsAreDroppedWithoutLosingTheFile() throws {

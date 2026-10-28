@@ -9,7 +9,7 @@ import Carbon
 /// hotkey event and passes on the ones that aren't its own.
 final class GlobalHotKey {
     nonisolated static let signature: OSType = 0x506F_7079  // 'Popy'
-    /// 1: the panel hotkey, 2: Act on Selection (DESIGN §9.14).
+    /// 1: the panel hotkey, 2: Act on Selection (DESIGN §9.14), 3: Send Selection (§9.17).
     nonisolated let id: UInt32
 
     private let action: @MainActor () -> Void

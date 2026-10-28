@@ -64,6 +64,11 @@ nonisolated struct Config: Codable, Sendable {
     /// Act on Selection is on: its hotkey is registered (DESIGN §9.14). Missing, it's on
     /// when a hotkey was already set.
     var actEnabled = false
+    /// Send Selection's hotkey (DESIGN §9.17); none by default.
+    var sendHotkey = ""
+    /// Send Selection is on: its hotkey is registered (DESIGN §9.17). Missing, it's on when
+    /// a hotkey is set.
+    var sendEnabled = false
     /// The intro was finished or skipped, so it doesn't show at launch (DESIGN §9.15).
     var introShown = false
 
@@ -108,6 +113,8 @@ nonisolated struct Config: Codable, Sendable {
         actHotkey = (try? c.decodeIfPresent(String.self, forKey: .actHotkey)) ?? ""
         actCleanup = (try? c.decodeIfPresent(ActCleanup.self, forKey: .actCleanup)) ?? .next
         actEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .actEnabled)) ?? !actHotkey.isEmpty
+        sendHotkey = (try? c.decodeIfPresent(String.self, forKey: .sendHotkey)) ?? ""
+        sendEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .sendEnabled)) ?? !sendHotkey.isEmpty
         introShown = (try? c.decodeIfPresent(Bool.self, forKey: .introShown)) ?? false
         // A bad "agents" entry must not discard the rest of the file: drop the whole list.
         do {

@@ -23,6 +23,10 @@ final class PillManager: NSObject {
     weak var actHotKeys: HotKeyManager? {
         didSet { actHotKeys?.onComboChanged = { [weak self] in self?.pills.forEach { $0.refreshSettings() } } }
     }
+    /// Send Selection's hotkey (DESIGN §9.17), recorded on the same settings page.
+    weak var sendHotKeys: HotKeyManager? {
+        didSet { sendHotKeys?.onComboChanged = { [weak self] in self?.pills.forEach { $0.refreshSettings() } } }
+    }
     /// The menu bar item's menu, rebuilt each time it opens (DESIGN §7.12).
     private(set) lazy var statusMenu: NSMenu = {
         let menu = NSMenu()
@@ -391,6 +395,16 @@ final class PillManager: NSObject {
         pills.forEach { $0.refreshSettings() }
     }
 
+    /// Send Selection on or off (DESIGN §9.17): its hotkey is registered only while on.
+    func setSendEnabled(_ on: Bool) {
+        guard on != config.sendEnabled else { return }
+        config.sendEnabled = on
+        sendHotKeys?.setActive(on)
+        appLog("send: \(on ? "on" : "off")")
+        save(on, "sendEnabled")
+        pills.forEach { $0.refreshSettings() }
+    }
+
     // MARK: - Intro (DESIGN §9.15)
 
     /// The permission was asked for once this run: the intro's button opens System Settings.
@@ -546,6 +560,12 @@ final class PillManager: NSObject {
         let pill = recent ?? newPill(show: false)
         pill.addActSession(command: "claude", startCommand: command, directory: directory, name: name, show: show)
         saveLayout()
+    }
+
+    /// Send Selection (DESIGN §9.17): `text` pasted into the most recent pill's session (a
+    /// new pill if there's none), which opens on it.
+    func sendToRecentSession(_ text: String) {
+        (recent ?? newPill(show: false)).sendToAgent(text)
     }
 
     /// Act on Selection sessions that are done and were never looked at (DESIGN §9.14), done

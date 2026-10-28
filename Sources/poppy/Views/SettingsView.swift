@@ -31,6 +31,10 @@ struct SettingsModel {
     var actHotkey: String?
     var canRecordActHotkey: Bool
     var actEnabled: Bool
+    /// Send Selection's hotkey (DESIGN §9.17); nil when none is registered.
+    var sendHotkey: String?
+    var canRecordSendHotkey: Bool
+    var sendEnabled: Bool
     /// Panel, Terminal and General (M27): the global settings as saved.
     var settings: Config
     var launchAtLogin: LaunchAtLogin.State
@@ -78,12 +82,14 @@ final class SettingsView: NSView {
     var onEditConfig: (() -> Void)?
     var onChange: ((SettingsChange) -> Void)?
     var onActEnabled: ((Bool) -> Void)?
+    var onSendEnabled: ((Bool) -> Void)?
     /// The intro (DESIGN §9.15), from its first page or only its permissions page.
     var onShowIntro: (() -> Void)?
     var onCheckPermissions: (() -> Void)?
 
     let hotkeyField = HotkeyField()
     let actHotkeyField = HotkeyField()
+    let sendHotkeyField = HotkeyField()
     /// The intro's pages, shown here in place of the settings (DESIGN §9.15).
     let intro = IntroView()
     private let scrollView = NSScrollView()
@@ -127,6 +133,9 @@ final class SettingsView: NSView {
     private let introButton = FirstMouseButton(title: "Show Intro…", target: nil, action: nil)
     private var actHotkeyTitle: NSTextField!
     private var actCleanupTitle: NSTextField!
+    // Send Selection
+    private let sendSwitch = FirstMouseSwitch()
+    private var sendHotkeyTitle: NSTextField!
     private var loginTitle: NSTextField!
     /// Titles of rows whose control can be disabled, dimmed with it.
     private var onInputTitle: NSTextField!
@@ -200,6 +209,9 @@ final class SettingsView: NSView {
         actSwitch.controlSize = .small
         actSwitch.target = self
         actSwitch.action = #selector(actChanged)
+        sendSwitch.controlSize = .small
+        sendSwitch.target = self
+        sendSwitch.action = #selector(sendChanged)
         for button in [permissionsButton, introButton] {
             button.bezelStyle = .push
             button.target = self
@@ -273,6 +285,12 @@ final class SettingsView: NSView {
             Self.row("Permissions", "Accessibility reads and acts in apps; Screen Recording takes the screenshot.",
                      permissionsButton).view,
         ])
+        let sendHotkey = Self.row("Hotkey", sendHotkeyField.messageLabel, sendHotkeyField)
+        sendHotkeyTitle = sendHotkey.title
+        let sendGroup = Self.group([
+            Self.row("Send Selection", "Off, its hotkey does nothing.", sendSwitch).view,
+            sendHotkey.view,
+        ])
         let advanced = Self.group([
             Self.row("Custom agents and other options", "In config.json, read when Poppy starts.",
                      editConfigButton).view,
@@ -284,9 +302,13 @@ final class SettingsView: NSView {
             Self.sectionHeader("Act on Selection", SettingsLabel.description(
                 "Select something in any app and press the hotkey: a Claude Code session in the pill deals with "
                 + "it there, or explains it. With nothing selected, drag over a region to screenshot instead.")),
+            Self.sectionHeader("Send Selection", SettingsLabel.description(
+                "Select something in any app and press the hotkey: it's pasted into the session you used last, "
+                + "which opens so you can add to it. With nothing selected, drag over a region to screenshot "
+                + "instead. Same permissions as Act on Selection.")),
             Self.sectionHeader("General"), Self.sectionHeader("Advanced"),
         ]
-        let groups = [pill, autoOpen, panelGroup, terminalGroup, actGroup, generalGroup, advanced]
+        let groups = [pill, autoOpen, panelGroup, terminalGroup, actGroup, sendGroup, generalGroup, advanced]
         let content = NSStackView(views: [general] + zip(headers, groups).flatMap { [$0, $1] })
         content.orientation = .vertical
         content.alignment = .leading
@@ -347,6 +369,8 @@ final class SettingsView: NSView {
         actHotkeyField.setAccessibilityLabel("Act on Selection hotkey")
         actSwitch.setAccessibilityLabel("Act on Selection")
         actCleanupPopUp.setAccessibilityLabel("Close finished Act on Selection sessions")
+        sendHotkeyField.setAccessibilityLabel("Send Selection hotkey")
+        sendSwitch.setAccessibilityLabel("Send Selection")
         for (control, label) in [(foldSwitch, "Fold when clicking outside"), (fadeSwitch, "Fade when not focused"),
                                  (fadeSlider.slider, "Faded opacity"), (hidePillSwitch, "Hide pill when collapsed"),
                                  (fontPopUp, "Terminal font"), (sizeStepper, "Terminal font size"),
@@ -388,7 +412,7 @@ final class SettingsView: NSView {
             + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch, foldOnPromptSwitch,
                foldSwitch, fadeSwitch, fadeSlider.slider, hidePillSwitch,
                fontPopUp, sizeStepper, themePopUp, opacitySlider.slider, cursorPopUp, blinkCheckbox, copySwitch,
-               actSwitch, actHotkeyField, actCleanupPopUp, permissionsButton,
+               actSwitch, actHotkeyField, actCleanupPopUp, permissionsButton, sendSwitch, sendHotkeyField,
                loginItemsButton, loginSwitch, confirmQuitSwitch, introButton, editConfigButton]
         settingsKeyView = loop.first
         nextKeyView = showsIntro ? intro.firstKeyView : loop.first
@@ -571,6 +595,10 @@ final class SettingsView: NSView {
         for title in [actHotkeyTitle, actCleanupTitle] {
             title?.textColor = model.actEnabled ? .labelColor : .tertiaryLabelColor
         }
+        sendSwitch.state = model.sendEnabled ? .on : .off
+        sendHotkeyField.show(model.sendHotkey, enabled: model.canRecordSendHotkey && model.sendEnabled,
+                             note: model.canRecordSendHotkey ? "Turn on Send Selection to set it." : nil)
+        sendHotkeyTitle.textColor = model.sendEnabled ? .labelColor : .tertiaryLabelColor
 
         let settings = model.settings
         foldSwitch.state = settings.foldOnClickOutside ? .on : .off
@@ -737,6 +765,7 @@ final class SettingsView: NSView {
     }
 
     @objc private func actChanged() { onActEnabled?(actSwitch.state == .on) }
+    @objc private func sendChanged() { onSendEnabled?(sendSwitch.state == .on) }
 
     @objc private func introButtonClicked(_ sender: NSButton) {
         if sender === permissionsButton { onCheckPermissions?() } else { onShowIntro?() }

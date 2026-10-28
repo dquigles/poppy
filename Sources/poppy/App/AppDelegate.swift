@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var manager: PillManager?
     private var hotKeys: HotKeyManager?
     private var actHotKeys: HotKeyManager?
+    private var sendHotKeys: HotKeyManager?
     private var act: ActController?
     private var statusItem: NSStatusItem?
     /// Poppy Dev only: scripted tests (DESIGN §12.2).
@@ -44,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        active: config.actEnabled) { [weak act] in act?.hotkeyPressed() }
         self.actHotKeys = actHotKeys
         manager.actHotKeys = actHotKeys
+        let sendHotKeys = HotKeyManager(spec: config.sendHotkey, id: 3, configKey: "sendHotkey", defaultSpec: "",
+                                        active: config.sendEnabled) { [weak act] in act?.sendHotkeyPressed() }
+        self.sendHotKeys = sendHotKeys
+        manager.sendHotKeys = sendHotKeys
         statusItem = makeStatusItem(menu: manager.statusMenu)
         manager.statusItem = statusItem
         if AppVariant.isDev { debugHook = DebugHook(manager: manager, act: act) }

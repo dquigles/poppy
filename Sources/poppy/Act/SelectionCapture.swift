@@ -46,6 +46,23 @@ nonisolated enum SelectionCapture {
         return AXIsProcessTrustedWithOptions([key: prompt] as CFDictionary)
     }
 
+    /// The front app's selected text alone (Send Selection, DESIGN §9.17); empty if none.
+    static func selection(pid: pid_t) -> String {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 1.5)
+        return selectedText(element(app, kAXFocusedUIElementAttribute))
+    }
+
+    /// `AXSelectedText` of the focused element, else copied with ⌘C; cut to `maxSelection`.
+    private static func selectedText(_ focused: AXUIElement?) -> String {
+        var selection = focused.flatMap { string($0, kAXSelectedTextAttribute) } ?? ""
+        if selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Static text in a web page has no AXSelectedText: copy it instead.
+            selection = KeyInput.copySelection() ?? ""
+        }
+        return String(selection.prefix(maxSelection))
+    }
+
     /// `anchor` (the mouse, in Accessibility's top-left coordinates) picks the nearest
     /// controls when the window has more than `maxControls`.
     static func capture(pid: pid_t, appName: String, anchor: CGPoint) -> ActCapture {
@@ -57,12 +74,7 @@ nonisolated enum SelectionCapture {
         appLog("act: \(appName) AXManualAccessibility: \(manual == .success ? "on" : "refused (\(manual.rawValue))")")
 
         let focused: AXUIElement? = element(app, kAXFocusedUIElementAttribute)
-        var selection = focused.flatMap { string($0, kAXSelectedTextAttribute) } ?? ""
-        if selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // Static text in a web page has no AXSelectedText: copy it instead.
-            selection = KeyInput.copySelection() ?? ""
-        }
-        selection = String(selection.prefix(maxSelection))
+        let selection = selectedText(focused)
 
         let window: AXUIElement? = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute)
         var found: [(ActControl, AXUIElement, CGRect)] = []
