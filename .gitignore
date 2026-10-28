@@ -10,3 +10,4 @@ DerivedData/
 /build
 /.claude/
 /CLAUDE.md
+/.build-dist
