@@ -1,0 +1,80 @@
+# Unit tests on every push and pull request, and the scripted tests against Poppy Dev on a
+# macOS runner's desktop (DESIGN §12.2). The scripted job may fail without failing the run
+# until it has proven stable there.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Build and unit tests
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Swift version
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Unit tests
+        run: swift test
+
+  scripted:
+    name: Scripted tests (Poppy Dev)
+    runs-on: macos-26
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Build Poppy Dev (signed ad-hoc)
+        run: ./scripts/bundle.sh
+        env:
+          POPPY_SIGN_IDENTITY: "-"
+      # A fresh runner has no Poppy Dev settings: no intro at launch, and `cat` as the agent
+      # (no real agent is installed). The scripts set the rest and put this file back.
+      - name: Poppy Dev settings
+        run: |
+          mkdir -p ~/.config/poppy-dev
+          echo '{"command": "cat", "cwd": "~", "introShown": true}' > ~/.config/poppy-dev/config.json
+      - name: test-features.py
+        if: ${{ !cancelled() }}
+        run: ./scripts/test-features.py
+      - name: test-pills.py
+        if: ${{ !cancelled() }}
+        run: ./scripts/test-pills.py
+      - name: test-drag.py
+        if: ${{ !cancelled() }}
+        run: ./scripts/test-drag.py
+      - name: test-sessions.py
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/dev.sh
+          status=0
+          ./scripts/test-sessions.py || status=$?
+          ./scripts/dev.sh --stop
+          exit $status
+      - name: Poppy Dev log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: poppy-dev-log
+          path: build/poppy-dev.log
+          if-no-files-found: ignore
