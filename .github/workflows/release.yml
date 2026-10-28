@@ -1,0 +1,56 @@
+# A v* tag (e.g. v0.2.0, on main) builds, signs and notarizes Poppy with scripts/release.sh and
+# publishes a GitHub release with the DMG and the Sparkle appcast (DESIGN §12.5).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, notarize and publish
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      TEAM_ID: BKRJX365JM
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the build number is the commit count
+      # A keychain of its own for the Developer ID certificate and the notarytool login,
+      # made the default so codesign and notarytool find both.
+      - name: Import the Developer ID certificate
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$keychain"
+          security find-identity -v -p codesigning "$keychain"
+      - name: Save the notarization login
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: xcrun notarytool store-credentials poppy-notary --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$NOTARY_PASSWORD"
+      - name: Build, sign and notarize
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: POPPY_VERSION="${GITHUB_REF_NAME#v}" ./scripts/release.sh
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/dist/Poppy-*.dmg build/dist/appcast.xml \
+            --title "Poppy ${GITHUB_REF_NAME#v}" --generate-notes

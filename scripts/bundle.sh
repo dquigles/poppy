@@ -32,7 +32,12 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp "$("${BUILD[@]}" --show-bin-path)/poppy" "$APP/Contents/MacOS/$EXECUTABLE"
+bin_path="$("${BUILD[@]}" --show-bin-path)"
+cp "$bin_path/poppy" "$APP/Contents/MacOS/$EXECUTABLE"
+# Sparkle (DESIGN §12.4) is linked, so it's needed to launch, though only a downloaded
+# Poppy uses it (this Info.plist has no feed).
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$bin_path/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 if (( DEV )); then
     plist="$APP/Contents/Info.plist"

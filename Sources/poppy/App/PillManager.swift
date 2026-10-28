@@ -37,6 +37,8 @@ final class PillManager: NSObject {
     /// Set while restoring, so building the pills doesn't save a half-built layout.
     private var restoring = false
     /// The menu bar item, colored by status while pills are hidden (DESIGN §7.21).
+    /// Only in a downloaded Poppy (DESIGN §12.4).
+    weak var updater: Updater?
     weak var statusItem: NSStatusItem? {
         didSet { updateMenuBarIcon() }
     }

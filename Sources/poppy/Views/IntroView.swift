@@ -66,6 +66,7 @@ final class IntroView: NSView {
     var onAllowAccessibility: (() -> Void)?
     var onAllowScreenRecording: (() -> Void)?
     var onRestart: (() -> Void)?
+    var onInstallCommand: (() -> Void)?
     var onStatusHooks: ((Bool) -> Void)?
     var onShowUsage: ((Bool) -> Void)?
     var onAutoOpen: ((_ key: String, _ on: Bool) -> Void)?
@@ -109,6 +110,7 @@ final class IntroView: NSView {
     private let commandBadge = StatusBadge()
     private let commandNote = SettingsLabel.description("")
     private let copyButton = FirstMouseButton(title: "Copy", target: nil, action: nil)
+    private let installButton = FirstMouseButton(title: "Install", target: nil, action: nil)
     private let loginSwitch = FirstMouseSwitch()
     private let loginNote = SettingsLabel.description("")
     private let loginItemsButton = FirstMouseButton(title: "Open Login Items", target: nil, action: nil)
@@ -131,7 +133,7 @@ final class IntroView: NSView {
         nextButton.keyEquivalent = "\r"  // drawn as the default button; GlassPanel sends Return here
         dots.font = .systemFont(ofSize: 9)
         dots.textColor = .tertiaryLabelColor
-        for button in [accessibilityButton, screenButton, restartButton, copyButton, loginItemsButton] {
+        for button in [accessibilityButton, screenButton, restartButton, copyButton, installButton, loginItemsButton] {
             button.bezelStyle = .push
             button.controlSize = .small
             button.target = self
@@ -158,7 +160,7 @@ final class IntroView: NSView {
             .agent: agentRows.flatMap { [$0.get, $0.radio] },
             .hotkeys: [hotkeyField, actSwitch, actHotkeyField, sendSwitch, sendHotkeyField],
             .permissions: [accessibilityButton, screenButton, restartButton],
-            .finish: [copyButton, loginItemsButton, loginSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, usageSwitch],
+            .finish: [copyButton, installButton, loginItemsButton, loginSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, usageSwitch],
         ]
 
         scrollView.drawsBackground = false
@@ -312,7 +314,7 @@ final class IntroView: NSView {
     }
 
     private func finishSections() -> [(NSView?, NSView)] {
-        let command = Self.trailing([commandBadge, copyButton])
+        let command = Self.trailing([commandBadge, copyButton, installButton])
         let loginControls = NSStackView(views: [loginItemsButton, loginSwitch])
         loginControls.spacing = 10
         let login = SettingsView.row("Launch at login", loginNote, loginControls)
@@ -501,6 +503,7 @@ final class IntroView: NSView {
         }
 
         copyButton.isHidden = true
+        installButton.isHidden = true
         switch model.command {
         case .checking:
             commandBadge.show(.pending, "Checking…")
@@ -516,7 +519,8 @@ final class IntroView: NSView {
             copyButton.isHidden = false
         case .missing:
             commandBadge.show(.needed, "Not installed")
-            commandNote.stringValue = "scripts/install.sh puts it in ~/.local/bin."
+            commandNote.stringValue = "Install puts it in ~/.local/bin."
+            installButton.isHidden = false
         }
 
         let login = model.launchAtLogin
@@ -576,6 +580,7 @@ final class IntroView: NSView {
         case screenButton: onAllowScreenRecording?()
         case restartButton: onRestart?()
         case loginItemsButton: onChange?(.openLoginItems)
+        case installButton: onInstallCommand?()
         default:
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(Self.pathLine.line, forType: .string)

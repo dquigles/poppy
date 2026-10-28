@@ -2031,6 +2031,7 @@ final class PanelController: NSObject {
         settingsItem.target = self
         settingsItem.isEnabled = !isAnimating
         menu.addItem(settingsItem)
+        if let updater = manager.updater { menu.addItem(updater.menuItem()) }
 
         menu.addItem(.separator())
 
@@ -2366,6 +2367,15 @@ final class PanelController: NSObject {
         intro.onAllowAccessibility = { [weak self] in self?.manager.askForPermission(accessibility: true) }
         intro.onAllowScreenRecording = { [weak self] in self?.manager.askForPermission(accessibility: false) }
         intro.onRestart = { [weak self] in self?.manager.relaunchForIntro() }
+        intro.onInstallCommand = { [weak self] in
+            do {
+                try CommandLineClient.installWrapper()
+                appLog("intro: installed the poppy command")
+            } catch {
+                appLog("intro: could not install the poppy command: \(error)")
+            }
+            self?.refreshIntro()
+        }
         intro.onStatusHooks = { [weak self] on in
             self?.setStatusHooks(on)
             self?.refreshSettings()

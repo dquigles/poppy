@@ -207,3 +207,28 @@ struct TerminalLookTests {
         #expect(font.isFixedPitch)
     }
 }
+
+struct CommandInstallTests {
+    /// The wrapper runs the app's binary with --cli and the arguments, also from a path with
+    /// spaces and shell characters, and never replaces an existing command.
+    @Test func wrapperRunsTheAppsBinary() throws {
+        let folder = temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let app = folder.appendingPathComponent("My $Apps \"x\"/Poppy.app")
+        let macOS = app.appendingPathComponent("Contents/MacOS")
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        let out = folder.appendingPathComponent("args")
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(out.path)'\n"
+            .write(to: macOS.appendingPathComponent("poppy"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: macOS.appendingPathComponent("poppy").path)
+        let bin = folder.appendingPathComponent("bin")
+        try CommandLineClient.installWrapper(in: bin, app: app.path, executable: "poppy")
+
+        #expect(runShell("'\(bin.path)/poppy' -b 'a dir'") == 0)
+        #expect(read(out) == "--cli\n-b\na dir\n")
+        #expect(throws: (any Error).self) {
+            try CommandLineClient.installWrapper(in: bin, app: app.path, executable: "poppy")
+        }
+    }
+}

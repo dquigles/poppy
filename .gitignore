@@ -11,3 +11,11 @@ DerivedData/
 /.claude/
 /CLAUDE.md
 /.build-dist
+
+# Signing material never belongs in the repo (DESIGN §12.3)
+*.p12
+*.cer
+*.pem
+*.key
+*sparkle-key*
+.env

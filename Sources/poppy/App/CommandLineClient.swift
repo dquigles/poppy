@@ -183,4 +183,34 @@ nonisolated enum CommandLineClient {
     private static func fail(_ message: String) {
         FileHandle.standardError.write(Data("poppy: \(message)\n".utf8))
     }
+
+    // MARK: Installing the command
+
+    /// Where install.sh and the intro's Install button put the command.
+    static var installDirectory: URL { URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".local/bin") }
+
+    /// The wrapper scripts/install.sh writes: `app`'s binary in client mode.
+    static func wrapper(app: String, executable: String) -> String {
+        let quoted = app.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "$", with: "\\$").replacingOccurrences(of: "`", with: "\\`")
+        return """
+        #!/bin/sh
+        # Installed by Poppy. Set POPPY_APP to use a Poppy.app elsewhere.
+        exec "${POPPY_APP:-\(quoted)}/Contents/MacOS/\(executable)" \(flag) "$@"
+
+        """
+    }
+
+    /// The intro's Install button (DESIGN §9.15), for a Poppy that didn't come from
+    /// install.sh: the same wrapper, for this app, mode 755. Never replaces an existing file.
+    static func installWrapper(in directory: URL = installDirectory, app: String = Bundle.main.bundlePath,
+                               executable: String = Bundle.main.executableURL?.lastPathComponent ?? "poppy") throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("poppy")
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path])
+        }
+        try wrapper(app: app, executable: executable).write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
 }

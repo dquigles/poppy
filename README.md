@@ -57,11 +57,19 @@ Your agent works best when you can glance at it without switching apps. Poppy ke
 ## Requirements
 
 - **macOS 26 (Tahoe)** for the Liquid Glass look. Poppy also runs on macOS 14–15 with a frosted-glass fallback, but that is less tested.
-- **Apple Silicon or Intel.** It builds natively for your Mac's chip.
-- **Xcode 26, or its Command Line Tools** (Swift 6.2 and the macOS 26 SDK), to build it. Install the tools with `xcode-select --install`, or install Xcode from the App Store.
+- **Apple Silicon or Intel.** The download runs natively on both; a build from source is for your Mac's chip.
+- To build from source only: **Xcode 26, or its Command Line Tools** (Swift 6.2 and the macOS 26 SDK). Install the tools with `xcode-select --install`, or install Xcode from the App Store.
 - **The agent you want to use**, installed and working in your terminal, e.g. [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`), Codex (`codex`) or the [Antigravity CLI](https://antigravity.google) (`agy`).
 
 ## Install
+
+### Download
+
+Download **Poppy-<version>.dmg** from the [latest release](https://github.com/dquigles/poppy/releases/latest), open it and drag Poppy into Applications. It's signed and notarized by Apple, so it opens without warnings, and it updates itself: it checks for new versions once a day, and **Check for Updates…** in Poppy's menu checks now.
+
+The setup at the first launch can install the `poppy` command (in `~/.local/bin`).
+
+### Build from source
 
 ```sh
 git clone https://github.com/dquigles/poppy.git
@@ -78,7 +86,7 @@ It then starts Poppy, which walks you through a short setup the first time. To u
 
 You can put things elsewhere: `APP_DIR=~/Applications BIN_DIR=/usr/local/bin ./scripts/install.sh`.
 
-Because you build Poppy yourself, macOS runs it without any "unidentified developer" warning. No paid Apple Developer account is involved.
+Because you build Poppy yourself, macOS runs it without any "unidentified developer" warning. No paid Apple Developer account is involved. A build from source doesn't update itself.
 
 macOS asks whether Poppy may access your Desktop or Documents folders when the agent works there (the agent runs inside Poppy, so its file access counts as Poppy's). If you have an Apple Development certificate (Xcode creates one for free when you sign in with your Apple ID under Xcode → Settings → Accounts), the build is signed with it and macOS remembers your answers across updates; otherwise it may ask again after each rebuild. Set `POPPY_SIGN_IDENTITY` to choose a certificate, or `-` to skip signing with one.
 
@@ -153,6 +161,7 @@ Poppy reads this file when it starts, so restart Poppy after editing it.
   - For Codex, it asks `codex app-server` for its rate limits.
   - For Antigravity, it runs `agy -p /usage` (no model call), only after checking that `agy` is signed in (it looks for `agy`'s login in your Keychain by name, without reading it), since a signed-out `agy` would open a browser sign-in page.
   - Turn the meters off with **Show usage meters** in Settings (**Settings…** in the menu, or ⌘, in the panel).
+- **Updates** (the downloaded Poppy only): once a day, Sparkle fetches the latest release's `appcast.xml` from GitHub. Nothing about you or your Mac is sent.
 - **Pasted and dropped images** are saved as PNGs in a private temporary folder and deleted after a week.
 
 Poppy itself needs no special permissions. Only **Act on Selection**, if you turn it on, needs **Accessibility** (to read the selection and act on the app's controls) and, for its screenshot mode, **Screen Recording**; the setup asks for them only then.
@@ -162,6 +171,7 @@ Poppy itself needs no special permissions. Only **Act on Selection**, if you tur
 ```sh
 pkill -x poppy; pkill -x poppy-dev
 rm -rf /Applications/Poppy.app ~/.local/bin/poppy ~/.config/poppy ~/.config/poppy-dev ~/.gemini/config/plugins/poppy-status
+defaults delete io.github.dquigles.poppy 2>/dev/null  # the downloaded Poppy's update settings
 ```
 
 Then remove Poppy's hook entries from `~/.codex/hooks.json` if you used Codex: each entry mentions `POPPY_STATUS_FILE`. Also delete `~/.config/opencode/plugins/poppy-status.ts` if it's there.
@@ -175,7 +185,10 @@ swift test                    # unit tests: hooks, resuming, config, usage parsi
 ./scripts/dev.sh --stop       # stop it
 ./scripts/test-features.py    # scripted tests against Poppy Dev (also test-sessions.py, test-pills.py, test-drag.py)
 ./scripts/bundle.sh --release # build build/Poppy.app (what install.sh installs)
+./scripts/release.sh          # the downloadable DMG: universal, signed, notarized (needs a Developer ID)
 ```
+
+Pushing a `v*` tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) builds and publishes a release on GitHub Actions.
 
 **Poppy Dev** is a second copy you can run beside your installed Poppy, so you can work on Poppy with an agent inside Poppy: changes are tested in Poppy Dev while the agent keeps running. It has its own settings in `~/.config/poppy-dev/`, no hotkey until you set one, and a purple DEV tag on its pill. Run `./scripts/install.sh` from a normal terminal (it restarts your installed Poppy, and the agent in it) when you want the changes in your real Poppy.
 

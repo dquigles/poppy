@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sendHotKeys: HotKeyManager?
     private var act: ActController?
     private var statusItem: NSStatusItem?
+    private var updater: Updater?
     /// Poppy Dev only: scripted tests (DESIGN §12.2).
     private var debugHook: DebugHook?
     /// Requests from the `poppy` shell command that arrived before launch finished, in
@@ -52,6 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = makeStatusItem(menu: manager.statusMenu)
         manager.statusItem = statusItem
         if AppVariant.isDev { debugHook = DebugHook(manager: manager, act: act) }
+        if Updater.isAvailable {
+            updater = Updater()
+            manager.updater = updater
+        }
         for request in pendingRequests { manager.apply(request) }
         pendingRequests = []
         // The intro (DESIGN §9.15): at the first launch, or back on its permissions page
