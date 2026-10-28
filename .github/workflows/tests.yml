@@ -1,6 +1,5 @@
 # Unit tests on every push and pull request, and the scripted tests against Poppy Dev on a
-# macOS runner's desktop (DESIGN §12.2). The scripted job may fail without failing the run
-# until it has proven stable there.
+# macOS runner's desktop (DESIGN §12.2). A failure in either job fails the run.
 name: Tests
 
 on:
@@ -36,7 +35,6 @@ jobs:
     name: Scripted tests (Poppy Dev)
     runs-on: macos-26
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v6
