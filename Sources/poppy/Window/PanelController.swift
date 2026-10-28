@@ -2354,6 +2354,7 @@ final class PanelController: NSObject {
             useAgent(AgentCatalog.builtIns[index])
         }
         intro.onActEnabled = { [weak self] on in self?.manager.setActEnabled(on) }
+        intro.onSendEnabled = { [weak self] on in self?.manager.setSendEnabled(on) }
         intro.onAllowAccessibility = { [weak self] in self?.manager.askForPermission(accessibility: true) }
         intro.onAllowScreenRecording = { [weak self] in self?.manager.askForPermission(accessibility: false) }
         intro.onRestart = { [weak self] in self?.manager.relaunchForIntro() }
@@ -2380,6 +2381,11 @@ final class PanelController: NSObject {
             self?.manager.actHotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
         }
         intro.actHotkeyField.onEnd = { [weak self] in self?.manager.actHotKeys?.endRecording() }
+        intro.sendHotkeyField.onBegin = { [weak self] in self?.manager.sendHotKeys?.beginRecording() ?? false }
+        intro.sendHotkeyField.onRecord = { [weak self] combo in
+            self?.manager.sendHotKeys?.record(combo) ?? .failed("Hotkeys are unavailable.")
+        }
+        intro.sendHotkeyField.onEnd = { [weak self] in self?.manager.sendHotKeys?.endRecording() }
     }
 
     /// The default agent (`command`, for new sessions). The selected session switches too
@@ -2477,6 +2483,9 @@ final class PanelController: NSObject {
             actEnabled: config.actEnabled,
             actHotkey: manager.actHotKeys?.current?.displayString,
             canRecordActHotkey: manager.actHotKeys?.canRecord == true,
+            sendEnabled: config.sendEnabled,
+            sendHotkey: manager.sendHotKeys?.current?.displayString,
+            canRecordSendHotkey: manager.sendHotKeys?.canRecord == true,
             accessibility: SelectionCapture.isTrusted(prompt: false),
             screenRecording: CGPreflightScreenCaptureAccess(),
             askedAccessibility: manager.askedAccessibility, askedScreenRecording: manager.askedScreenRecording,

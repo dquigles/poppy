@@ -26,6 +26,9 @@ struct IntroModel {
     var actEnabled: Bool
     var actHotkey: String?
     var canRecordActHotkey: Bool
+    var sendEnabled: Bool
+    var sendHotkey: String?
+    var canRecordSendHotkey: Bool
     var accessibility: Bool
     var screenRecording: Bool
     /// Asked once already: the button opens System Settings instead.
@@ -59,6 +62,7 @@ final class IntroView: NSView {
 
     var onAgent: ((Int) -> Void)?
     var onActEnabled: ((Bool) -> Void)?
+    var onSendEnabled: ((Bool) -> Void)?
     var onAllowAccessibility: (() -> Void)?
     var onAllowScreenRecording: (() -> Void)?
     var onRestart: (() -> Void)?
@@ -73,10 +77,12 @@ final class IntroView: NSView {
 
     let hotkeyField = HotkeyField()
     let actHotkeyField = HotkeyField()
+    let sendHotkeyField = HotkeyField()
     private(set) var page = IntroPage.welcome
     /// Only this page, with no Back and Next (Check Permissions… in Settings).
     private(set) var single = false
     private var actEnabled = false
+    private var sendEnabled = false
 
     private let scrollView = NSScrollView()
     private var documents: [IntroPage: NSView] = [:]
@@ -90,6 +96,8 @@ final class IntroView: NSView {
     // Hotkeys
     private let actSwitch = FirstMouseSwitch()
     private var actHotkeyTitle: NSTextField!
+    private let sendSwitch = FirstMouseSwitch()
+    private var sendHotkeyTitle: NSTextField!
     // Permissions
     private let accessibilityBadge = StatusBadge()
     private let accessibilityButton = FirstMouseButton(title: "Allow…", target: nil, action: nil)
@@ -129,7 +137,7 @@ final class IntroView: NSView {
             button.target = self
             button.action = #selector(buttonClicked(_:))
         }
-        for control in [actSwitch, loginSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, usageSwitch] {
+        for control in [actSwitch, sendSwitch, loginSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, usageSwitch] {
             control.controlSize = .small
             control.target = self
             control.action = #selector(switchChanged(_:))
@@ -137,6 +145,8 @@ final class IntroView: NSView {
         hotkeyField.setAccessibilityLabel("Hotkey")
         actHotkeyField.setAccessibilityLabel("Act on Selection hotkey")
         actSwitch.setAccessibilityLabel("Use Act on Selection")
+        sendHotkeyField.setAccessibilityLabel("Send Selection hotkey")
+        sendSwitch.setAccessibilityLabel("Use Send Selection")
 
         documents[.welcome] = document(welcomeContent(), top: 28)
         documents[.agent] = document(sections(agentSections()))
@@ -146,7 +156,7 @@ final class IntroView: NSView {
         pageKeyViews = [
             .welcome: [],
             .agent: agentRows.flatMap { [$0.get, $0.radio] },
-            .hotkeys: [hotkeyField, actSwitch, actHotkeyField],
+            .hotkeys: [hotkeyField, actSwitch, actHotkeyField, sendSwitch, sendHotkeyField],
             .permissions: [accessibilityButton, screenButton, restartButton],
             .finish: [copyButton, loginItemsButton, loginSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, usageSwitch],
         ]
@@ -263,6 +273,8 @@ final class IntroView: NSView {
     private func hotkeySections() -> [(NSView?, NSView)] {
         let actHotkey = SettingsView.row("Hotkey", actHotkeyField.messageLabel, actHotkeyField)
         actHotkeyTitle = actHotkey.title
+        let sendHotkey = SettingsView.row("Hotkey", sendHotkeyField.messageLabel, sendHotkeyField)
+        sendHotkeyTitle = sendHotkey.title
         return [
             (SettingsView.sectionHeader("Hotkey", SettingsLabel.description(
                 "Opens and folds the panel from anywhere, also over fullscreen apps.")),
@@ -274,6 +286,12 @@ final class IntroView: NSView {
                     + "set up next.")),
              SettingsView.group([SettingsView.row("Use Act on Selection", nil as String?, actSwitch).view,
                                  actHotkey.view])),
+            (SettingsView.sectionHeader("Send Selection", SettingsLabel.description(
+                "The simple version: select something in any app and press its hotkey, and it's pasted into the "
+                    + "session you used last, which opens so you can add your question. With nothing selected, "
+                    + "you drag over part of the screen instead. It needs the same permissions.")),
+             SettingsView.group([SettingsView.row("Use Send Selection", nil as String?, sendSwitch).view,
+                                 sendHotkey.view])),
         ]
     }
 
@@ -281,7 +299,7 @@ final class IntroView: NSView {
         let accessibility = Self.trailing([accessibilityBadge, accessibilityButton])
         let screen = Self.trailing([screenBadge, restartButton, screenButton])
         return [(SettingsView.sectionHeader("Permissions", SettingsLabel.description(
-            "For Act on Selection. macOS asks once; the status here updates by itself.")),
+            "For Act on Selection and Send Selection. macOS asks once; the status here updates by itself.")),
                  SettingsView.group([
                     SettingsView.row("Accessibility", "Reads the selection and the window's buttons and fields, "
                                      + "and presses or fills them in.", accessibility).view,
@@ -375,7 +393,7 @@ final class IntroView: NSView {
 
     /// The pages Back and Next go through.
     private var pages: [IntroPage] {
-        single ? [page] : IntroPage.allCases.filter { $0 != .permissions || actEnabled }
+        single ? [page] : IntroPage.allCases.filter { $0 != .permissions || actEnabled || sendEnabled }
     }
 
     func show(_ page: IntroPage, single: Bool = false) {
@@ -425,6 +443,7 @@ final class IntroView: NSView {
     func cancelRecording() {
         hotkeyField.cancel()
         actHotkeyField.cancel()
+        sendHotkeyField.cancel()
     }
 
     // MARK: Keyboard
@@ -442,8 +461,9 @@ final class IntroView: NSView {
     // MARK: Model
 
     func update(_ model: IntroModel) {
-        let pagesChanged = actEnabled != model.actEnabled
+        let pagesChanged = actEnabled != model.actEnabled || sendEnabled != model.sendEnabled
         actEnabled = model.actEnabled
+        sendEnabled = model.sendEnabled
         for (row, agent) in zip(agentRows, model.agents) {
             row.radio.state = agent.isCurrent ? .on : .off
             row.radio.isEnabled = agent.installed != false || agent.isCurrent
@@ -462,6 +482,10 @@ final class IntroView: NSView {
         actHotkeyField.show(model.actHotkey, enabled: model.canRecordActHotkey && model.actEnabled,
                             note: model.canRecordActHotkey ? "Turn on Act on Selection to set it." : nil)
         actHotkeyTitle.textColor = model.actEnabled ? .labelColor : .tertiaryLabelColor
+        sendSwitch.state = model.sendEnabled ? .on : .off
+        sendHotkeyField.show(model.sendHotkey, enabled: model.canRecordSendHotkey && model.sendEnabled,
+                             note: model.canRecordSendHotkey ? "Turn on Send Selection to set it." : nil)
+        sendHotkeyTitle.textColor = model.sendEnabled ? .labelColor : .tertiaryLabelColor
 
         accessibilityBadge.show(model.accessibility ? .ok : .needed, model.accessibility ? "Allowed" : "Not allowed")
         accessibilityButton.isHidden = model.accessibility
@@ -537,6 +561,7 @@ final class IntroView: NSView {
         let on = sender.state == .on
         switch sender {
         case actSwitch: onActEnabled?(on)
+        case sendSwitch: onSendEnabled?(on)
         case loginSwitch: onChange?(.launchAtLogin(on))
         case hooksSwitch: onStatusHooks?(on)
         case onInputSwitch: onAutoOpen?("autoOpenOnInput", on)
