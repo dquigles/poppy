@@ -63,6 +63,7 @@ rm -rf "$DIST"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Logos" "$APP/Contents/Frameworks"
 lipo -create -output "$APP/Contents/MacOS/poppy" "${binaries[@]}"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns Resources/Assets.car "$APP/Contents/Resources/"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
     -c "Set :CFBundleVersion $BUILD_NUMBER" \
     -c "Add :SUFeedURL string $FEED_URL" \

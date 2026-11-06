@@ -39,6 +39,7 @@ cp "$bin_path/poppy" "$APP/Contents/MacOS/$EXECUTABLE"
 mkdir -p "$APP/Contents/Frameworks"
 ditto "$bin_path/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns Resources/Assets.car "$APP/Contents/Resources/"
 if (( DEV )); then
     plist="$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $EXECUTABLE" \
