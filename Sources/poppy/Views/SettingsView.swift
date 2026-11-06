@@ -47,6 +47,7 @@ enum SettingsChange {
     case fadeWhenInactive(Bool)
     case inactiveOpacity(Double, done: Bool)
     case hidePill(Bool)
+    case glassAppearance(GlassAppearance)
     case terminalFont(String?)
     case terminalFontSize(Double)
     case terminalTheme(TerminalTheme)
@@ -111,6 +112,7 @@ final class SettingsView: NSView {
     private let fadeSwitch = FirstMouseSwitch()
     private let fadeSlider = PercentSlider(range: Config.inactiveOpacityRange)
     private let hidePillSwitch = FirstMouseSwitch()
+    private let glassPopUp = FirstMousePopUpButton()
     private var fadeSliderTitle: NSTextField!
     // Terminal
     private let fontPopUp = FirstMousePopUpButton()
@@ -191,6 +193,9 @@ final class SettingsView: NSView {
         themePopUp.addItems(withTitles: TerminalTheme.allCases.map(\.title))
         themePopUp.target = self
         themePopUp.action = #selector(themeChosen)
+        glassPopUp.addItems(withTitles: GlassAppearance.allCases.map(\.title))
+        glassPopUp.target = self
+        glassPopUp.action = #selector(glassChosen)
         cursorPopUp.addItems(withTitles: CursorShape.allCases.map(\.title))
         cursorPopUp.target = self
         cursorPopUp.action = #selector(cursorChosen)
@@ -245,6 +250,8 @@ final class SettingsView: NSView {
         let fadeOpacity = Self.row("Faded opacity", nil as String?, fadeSlider)
         fadeSliderTitle = fadeOpacity.title
         let panelGroup = Self.group([
+            Self.row("Glass", "Automatic turns light or dark with what's behind it. For the pill too.",
+                     glassPopUp).view,
             Self.row("Fold when clicking outside", "Off, the panel stays open until you fold it. "
                      + "Each panel's pin keeps it open too.", foldSwitch).view,
             Self.row("Fade when not focused", "While you're in another app; full again on hover.", fadeSwitch).view,
@@ -372,7 +379,7 @@ final class SettingsView: NSView {
         sendHotkeyField.setAccessibilityLabel("Send Selection hotkey")
         sendSwitch.setAccessibilityLabel("Send Selection")
         for (control, label) in [(foldSwitch, "Fold when clicking outside"), (fadeSwitch, "Fade when not focused"),
-                                 (fadeSlider.slider, "Faded opacity"), (hidePillSwitch, "Hide pill when collapsed"),
+                                 (fadeSlider.slider, "Faded opacity"), (hidePillSwitch, "Hide pill when collapsed"), (glassPopUp, "Glass"),
                                  (fontPopUp, "Terminal font"), (sizeStepper, "Terminal font size"),
                                  (themePopUp, "Terminal theme"), (opacitySlider.slider, "Terminal background opacity"),
                                  (cursorPopUp, "Cursor"), (copySwitch, "Copy on select"),
@@ -410,7 +417,7 @@ final class SettingsView: NSView {
     private func linkKeyLoop() {
         let loop: [NSView] = [agentPopUp, directoryPopUp, hotkeyField, hotkeyTargetPopUp] + pillRadios
             + [usageSwitch, hooksSwitch, onInputSwitch, onDoneSwitch, focusSwitch, foldOnPromptSwitch,
-               foldSwitch, fadeSwitch, fadeSlider.slider, hidePillSwitch,
+               glassPopUp, foldSwitch, fadeSwitch, fadeSlider.slider, hidePillSwitch,
                fontPopUp, sizeStepper, themePopUp, opacitySlider.slider, cursorPopUp, blinkCheckbox, copySwitch,
                actSwitch, actHotkeyField, actCleanupPopUp, permissionsButton, sendSwitch, sendHotkeyField,
                loginItemsButton, loginSwitch, confirmQuitSwitch, introButton, editConfigButton]
@@ -607,6 +614,7 @@ final class SettingsView: NSView {
         fadeSlider.isEnabled = settings.fadeWhenInactive
         fadeSliderTitle.textColor = settings.fadeWhenInactive ? .labelColor : .tertiaryLabelColor
         hidePillSwitch.state = settings.hidePill ? .on : .off
+        glassPopUp.selectItem(at: GlassAppearance.allCases.firstIndex(of: settings.glassAppearance) ?? 0)
         updateFonts(selected: settings.terminalFont)
         sizeStepper.doubleValue = settings.terminalFontSize
         sizeLabel.stringValue = "\(Int(settings.terminalFontSize)) pt"
@@ -754,6 +762,10 @@ final class SettingsView: NSView {
 
     @objc private func themeChosen() {
         onChange?(.terminalTheme(TerminalTheme.allCases[max(themePopUp.indexOfSelectedItem, 0)]))
+    }
+
+    @objc private func glassChosen() {
+        onChange?(.glassAppearance(GlassAppearance.allCases[max(glassPopUp.indexOfSelectedItem, 0)]))
     }
 
     @objc private func cursorChosen() {

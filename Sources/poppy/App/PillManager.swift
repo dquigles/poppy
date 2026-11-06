@@ -480,6 +480,11 @@ final class PillManager: NSObject {
             save(on, "hidePill")
             pills.forEach { $0.hidePillChanged() }
             pillVisibilityChanged()
+        case .glassAppearance(let look):
+            config.glassAppearance = look
+            save(look.rawValue, "glassAppearance")
+            pills.forEach { $0.glassAppearanceChanged() }
+            if #available(macOS 26, *) { (liquidStorage as? LiquidDrag)?.glassAppearanceChanged() }
         case .terminalFont(let name):
             config.terminalFont = name
             save(name ?? NSNull(), "terminalFont")

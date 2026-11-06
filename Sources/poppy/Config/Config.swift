@@ -45,6 +45,8 @@ nonisolated struct Config: Codable, Sendable {
     var inactiveOpacity = 0.5
     /// No pill on screen while collapsed; opened from the menu bar (DESIGN §7.21).
     var hidePill = false
+    /// The glass's look: adapting to what's behind it, or always light or dark (DESIGN §10).
+    var glassAppearance = GlassAppearance.automatic
     /// The terminal's look (DESIGN §9.1); `terminalFont` is a PostScript name, nil for
     /// the system's monospaced font.
     var terminalFont: String?
@@ -100,6 +102,7 @@ nonisolated struct Config: Codable, Sendable {
         inactiveOpacity = Self.clamped((try? c.decodeIfPresent(Double.self, forKey: .inactiveOpacity)) ?? 0.5,
                                        to: Self.inactiveOpacityRange)
         hidePill = (try? c.decodeIfPresent(Bool.self, forKey: .hidePill)) ?? false
+        glassAppearance = (try? c.decodeIfPresent(GlassAppearance.self, forKey: .glassAppearance)) ?? .automatic
         terminalFont = (try? c.decodeIfPresent(String.self, forKey: .terminalFont)).flatMap { $0.isEmpty ? nil : $0 }
         terminalFontSize = Self.clamped((try? c.decodeIfPresent(Double.self, forKey: .terminalFontSize)) ?? 13,
                                         to: Self.fontSizeRange).rounded()
@@ -272,6 +275,14 @@ nonisolated enum TerminalTheme: String, Codable, Sendable, CaseIterable {
         case .system: "Follow system"
         }
     }
+}
+
+/// The pills' and panels' glass (DESIGN §10): Liquid Glass's own light or dark look over
+/// what's behind it, or always the light or dark one.
+nonisolated enum GlassAppearance: String, Codable, Sendable, CaseIterable {
+    case automatic, light, dark
+
+    var title: String { rawValue.capitalized }
 }
 
 /// When a finished Act on Selection session (done, never looked at) closes (DESIGN §9.14).

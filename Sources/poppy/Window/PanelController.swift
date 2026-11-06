@@ -141,9 +141,11 @@ final class PanelController: NSObject {
         let pillSize = frame.size
         pillFrame = frame
         panel = GlassPanel(contentRect: pillFrame)
+        panel.appearance = manager.config.glassAppearance.appearance
 
         glass = GlassBackgroundView(frame: NSRect(origin: .zero, size: pillSize),
                                     cornerRadius: pillSize.width / 2)
+        glass.setLook(manager.config.glassAppearance)
         glass.autoresizingMask = [.width, .height]
         var firstConfig = manager.config
         firstConfig.command = first
@@ -1380,6 +1382,7 @@ final class PanelController: NSObject {
             case "fadeWhenInactive": .fadeWhenInactive(on)
             case "inactiveOpacity": .inactiveOpacity(number, done: true)
             case "hidePill": .hidePill(on)
+            case "glassAppearance": GlassAppearance(rawValue: command.name ?? "").map { .glassAppearance($0) }
             case "terminalFontSize": .terminalFontSize(number)
             case "terminalOpacity": .terminalOpacity(number, done: true)
             case "copyOnSelect": .copyOnSelect(on)
@@ -1488,6 +1491,8 @@ final class PanelController: NSObject {
             "autoOpenedFor": autoOpenedFor?.rawValue ?? "",
             "pinned": pinned,
             "pillHidden": isPillHidden,
+            "appearance": panel.appearance?.name.rawValue ?? "",
+            "adaptive": glass.adaptiveValue ?? -1,
             "visible": panel.isVisible,
             "fade": Double(glass.fadeAlpha),
             "clickOutsideMonitor": clickOutsideMonitor != nil,
@@ -1569,6 +1574,12 @@ final class PanelController: NSObject {
         panel.refreshShadow()
         appLog("pill: shown")
         manager.pillVisibilityChanged()
+    }
+
+    /// The glass setting changed (DESIGN §10): the pill or panel takes the new look now.
+    func glassAppearanceChanged() {
+        panel.appearance = manager.config.glassAppearance.appearance
+        glass.setLook(manager.config.glassAppearance)
     }
 
     /// Hide pill changed: collapsed pills go or come back now.

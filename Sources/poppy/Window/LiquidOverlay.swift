@@ -205,6 +205,15 @@ final class LiquidOverlay {
     /// pills whose glass it draws) get a higher level meanwhile (`LiquidDrag.lend`):
     /// ordering a never-activated app's windows relative to each other didn't hold (the
     /// overlay's glass covered them, checked by screenshot).
+    /// The glass setting (DESIGN §10), like the pills' windows.
+    var appearance: NSAppearance? {
+        get { window.appearance }
+        set {
+            window.appearance = newValue
+            blobs.forEach { GlassAppearance.setAdaptive(newValue == nil, $0.glass) }
+        }
+    }
+
     func show(on screen: NSScreen, at level: NSWindow.Level) {
         window.level = level
         if self.screen.flatMap(PanelController.screenNumber) != PanelController.screenNumber(screen) || !window.isVisible {
@@ -218,6 +227,7 @@ final class LiquidOverlay {
 
     func add(_ blob: LiquidBlob) {
         blobs.append(blob)
+        GlassAppearance.setAdaptive(window.appearance == nil, blob.glass)
         content.addSubview(blob.glass)
         blob.apply(origin: window.frame.origin)
         window.invalidateShadow()

@@ -9,6 +9,29 @@ protocol NSGlassEffectViewMarker {}
 @available(macOS 26, *)
 extension NSGlassEffectView: NSGlassEffectViewMarker {}
 
+extension GlassAppearance {
+    /// Set on a glass's window. Alone it only fixes large glass: a pill-sized glass still
+    /// turns light or dark with what's behind it, whatever its appearance, tint or style,
+    /// until `setAdaptive(false)` (checked by screenshot over white and black).
+    var appearance: NSAppearance? {
+        switch self {
+        case .automatic: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+
+    /// Turns Liquid Glass's adapting to its background on or off for `glass` (an
+    /// NSGlassEffectView). A private property (`_adaptiveAppearance`: 2 on, the default,
+    /// 1 off, so the window's appearance decides), looked up each time: without it the glass
+    /// keeps adapting.
+    static func setAdaptive(_ on: Bool, _ glass: NSView) {
+        guard glass is NSGlassEffectViewMarker,
+              glass.responds(to: NSSelectorFromString("set_adaptiveAppearance:")) else { return }
+        glass.setValue(on ? 2 : 1, forKey: "_adaptiveAppearance")
+    }
+}
+
 final class GlassBackgroundView: NSView {
     let contentView = NSView()
 
@@ -72,6 +95,17 @@ final class GlassBackgroundView: NSView {
     }
 
     var fadeAlpha: CGFloat { backing.alphaValue }
+
+    /// The glass setting (DESIGN §10); its window gets `look.appearance` too.
+    func setLook(_ look: GlassAppearance) {
+        GlassAppearance.setAdaptive(look == .automatic, backing)
+    }
+
+    /// The private `_adaptiveAppearance` (Poppy Dev's state, DESIGN §12.2); nil without it.
+    var adaptiveValue: Int? {
+        guard backing.responds(to: NSSelectorFromString("_adaptiveAppearance")) else { return nil }
+        return (backing.value(forKey: "_adaptiveAppearance") as? NSNumber)?.intValue
+    }
 
     /// The mouse entered or left (tracked while Poppy isn't active, for the fade).
     var onHoverChange: (() -> Void)?

@@ -54,6 +54,11 @@ final class LiquidDrag {
     init(manager: PillManager) {
         self.manager = manager
         overlay.onFrame = { [weak self] in self?.frame() }
+        glassAppearanceChanged()
+    }
+
+    func glassAppearanceChanged() {
+        overlay.appearance = manager.config.glassAppearance.appearance
     }
 
     var isActive: Bool { overlay.isActive }

@@ -546,6 +546,17 @@ def hide_the_pill():
     check("saved", saved_config().get("hidePill") is False)
 
 
+@test
+def glass_appearance():
+    """Glass: Light and Dark fix the pill's look and stop it adapting, Automatic restores both; saved"""
+    for look, name, adaptive in (("light", "NSAppearanceNameAqua", 1), ("dark", "NSAppearanceNameDarkAqua", 1),
+                                 ("automatic", "", 2)):
+        s = cmd("setting", key="glassAppearance", name=look)
+        check(f"{look} applied", s["appearance"] == name and s["adaptive"] == adaptive,
+              f'{s["appearance"]} {s["adaptive"]}')
+        check(f"{look} saved", saved_config().get("glassAppearance") == look)
+
+
 def under_mouse(s):
     x, y, w, h = s["frame"]
     mx, my = s["mouse"]

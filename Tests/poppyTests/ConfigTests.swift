@@ -18,6 +18,7 @@ struct ConfigTests {
         #expect(config.showUsage)
         #expect(config.hotkeyTarget == .recent)
         #expect(config.foldOnClickOutside && !config.fadeWhenInactive && !config.hidePill)
+        #expect(config.glassAppearance == .automatic)
         #expect(config.inactiveOpacity == 0.5)
         #expect(config.terminalFont == nil && config.terminalFontSize == 13 && config.terminalOpacity == 0.8)
         #expect(config.terminalTheme == .dark && config.cursorStyle == .block && config.cursorBlink)
@@ -31,8 +32,10 @@ struct ConfigTests {
     @Test func wrongTypesFallBackInsteadOfFailingTheFile() throws {
         let config = try decode("""
         {"command": "codex", "statusHooks": "yes", "foldOnPrompt": 1, "hotkeyTarget": "sideways",
-         "terminalTheme": 3, "cursorStyle": "triangle", "actCleanup": "never", "terminalFont": ""}
+         "terminalTheme": 3, "cursorStyle": "triangle", "actCleanup": "never", "terminalFont": "",
+         "glassAppearance": "dim"}
         """)
+        #expect(config.glassAppearance == .automatic)
         #expect(config.command == "codex")
         #expect(config.statusHooks)
         #expect(!config.foldOnPrompt)
@@ -54,8 +57,10 @@ struct ConfigTests {
     @Test func settingsWrittenByTheSettingsPageDecode() throws {
         let config = try decode("""
         {"foldOnPrompt": true, "autoOpenOnDone": true, "autoOpenFocus": false, "hotkeyTarget": "cycle",
-         "terminalTheme": "system", "cursorStyle": "bar", "actCleanup": "keep", "hidePill": true}
+         "terminalTheme": "system", "cursorStyle": "bar", "actCleanup": "keep", "hidePill": true,
+         "glassAppearance": "dark"}
         """)
+        #expect(config.glassAppearance == .dark)
         #expect(config.foldOnPrompt && config.autoOpenOnDone && !config.autoOpenFocus && config.hidePill)
         #expect(config.hotkeyTarget == .cycle && config.terminalTheme == .system)
         #expect(config.cursorStyle == .bar && config.actCleanup == .keep)
