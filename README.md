@@ -71,6 +71,14 @@ Download **Poppy-<version>.dmg** from the [latest release](https://github.com/dq
 
 The setup at the first launch can install the `poppy` command (in `~/.local/bin`).
 
+### Homebrew
+
+```sh
+brew install --cask dquigles/tap/poppy
+```
+
+This installs the same signed DMG. Poppy still updates itself, so `brew upgrade` leaves it alone unless you pass `--greedy`.
+
 ### Build from source
 
 ```sh
