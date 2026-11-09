@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/media/icon.png" alt="Poppy app icon" width="128">
+
 # Poppy
 
 **A floating Liquid Glass terminal for your coding agent on macOS.**
